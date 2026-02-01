@@ -12,7 +12,8 @@ from telegram.constants import ParseMode
 import logging
 
 from tele_bot import config
-from src.handler.ai_research_handler import AIResearchHandler
+from src.agents.research_agent.ai_research_handler import AIResearchHandler
+from src.handler.main_agent_handler import create_main_agent
 
 # Enable logging
 logging.basicConfig(
@@ -20,7 +21,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
 
 # ========================================
 
@@ -101,17 +101,25 @@ async def authenticate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_auth
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command - only for authorized users."""
-    user = update.effective_user
     await update.message.reply_text(
-        f"Welcome {user.first_name}! 🔒\n\n"
-        f"This is your private bot.\n"
-        f"Your User ID: {user.id}\n\n"
-        "Available commands:\n"
-        "/start - Start the bot\n"
-        "/help - Show help\n"
-        "/myinfo - Your information\n"
-        "/adduser <user_id> - Add another user (admin only)\n"
-        "/listusers - List authorized users"
+        "Hi There! 👋\n\n"
+        "I am your private AI agent.\n"
+        "🔄 Initializing AI agent...\n"
+        "Provider: Google\n"
+        "Model: gemini-2.5-flash"
+    )
+
+    agent = create_main_agent(
+        provider="google",
+        model="gemini-2.5-flash",
+    )
+
+    # Store agent in user session
+    context.user_data["agent"] = agent
+
+    await update.message.reply_text(
+        "✅ Agent is ready.\n\n"
+        "You can now have chat."
     )
 
 @require_auth
@@ -288,17 +296,47 @@ async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 @require_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages from authorized users."""
-    user = update.effective_user
-    message_text = update.message.text
-    
-    logger.info(f"Message from {user.username} (ID: {user.id}): {message_text}")
-    
-    # Your custom logic here
-    response = f"I received your message: '{message_text}'\n\n"
-    response += "This is a private bot response! 🔒"
-    
-    await update.message.reply_text(response)
+    agent = context.user_data.get("agent")
+
+    if not agent:
+        await update.message.reply_text(
+            "⚠️ Agent not initialized.\n"
+            "Please type /start first."
+        )
+        return
+
+    user_message = update.message.text
+    status_message = await update.message.reply_text(f"🔍 `00`… please wait")
+
+    try:
+        result = agent.chat(user_message)  # or agent.run(...)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+        return
+    print("." * 100)
+    print(result)
+    print("." * 100)    
+    # logger.info(f"Research completed for {user.username} (ID: {user.id})")
+    if result is not None and result['status'] == "success":
+        extracted_text = result['response']
+        final_text = f"✅ **Response from Agent :**\n\n{extracted_text}"
+
+        # 2. Check if it's too long for a single message
+        if len(final_text) <= 4096:
+            await status_message.edit_text(final_text)
+        else:
+            # Delete the "Researching..." message and send multiple messages
+            await status_message.delete()
+            
+            # Split by chunks of 4000 to be safe
+            for i in range(0, len(final_text), 4000):
+                chunk = final_text[i:i+4000]
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id, 
+                    text=chunk
+                )
+        await update.message.reply_text(f"Agent calls : \n\n {result['agent_calls']}")
+    await status_message.reply_text(f"❌ Unable to get a response from the agent. Error : {result['error']}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Log errors."""

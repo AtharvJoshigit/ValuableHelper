@@ -7,7 +7,7 @@ name = "valuableHelper"
 version = "1.0.0"
 description = "A private Telegram bot for personal assistance and automation"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 
 keywords = ["telegram", "bot", "assistant", "automation", "private"]
 
@@ -17,6 +17,9 @@ dependencies = [
     "openai>=1.61.0",
     "google-generativeai>=0.8.4",
     "anthropic>=0.45.0",
+    "google-genai>=1.0.0",
+    "setuptools>=80.10.2",
+    "wheel>=0.46.3",
 ]
 
 [project.optional-dependencies]

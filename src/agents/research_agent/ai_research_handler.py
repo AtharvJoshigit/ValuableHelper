@@ -5,8 +5,8 @@ Handles different types of research queries using configured AI models
 from typing import Dict, List, Optional, Union, Literal
 from datetime import datetime
 from client.universal_ai_client import UniversalAIClient, OutputFormat
-from handler.config import get_config
-from prompts import research_propmts as rp
+from src.agents.research_agent.config import get_config
+from src.agents.research_agent.prompts import research_propmts as rp
 import json
 
 
@@ -199,7 +199,7 @@ Provide a well-structured, informative research report."""
         )
         
         print(f"✓ Research completed: {output}")
-        return output
+        return output.text
     
     def handle_research_on_trend(
         self,
