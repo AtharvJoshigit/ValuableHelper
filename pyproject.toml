@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "valuableHelper"
+version = "1.0.0"
+description = "A private Telegram bot for personal assistance and automation"
+readme = "README.md"
+requires-python = ">=3.12"
+
+keywords = ["telegram", "bot", "assistant", "automation", "private"]
+
+dependencies = [
+    "python-telegram-bot==20.7",
+    "python-dotenv",
+    "openai>=1.61.0",
+    "google-generativeai>=0.8.4",
+    "anthropic>=0.45.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0",
+]
