@@ -106,12 +106,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "I am your private AI agent.\n"
         "🔄 Initializing AI agent...\n"
         "Provider: Google\n"
-        "Model: gemini-2.5-flash"
+        "Model: gemini-3-flash-preview\n"
     )
 
     agent = create_main_agent(
         provider="google",
-        model="gemini-2.5-flash",
+        model="gemini-3-flash-preview",
     )
 
     # Store agent in user session

@@ -115,7 +115,7 @@ def create_agent_handler() -> AgentHandler:
     
     filesystem_agent = create_filesystem_agent(
         provider="google",
-        model="gemini-2.5-flash-lite"
+        model="gemini-3-flash-preview",
     )
     
     handler.register_agent(

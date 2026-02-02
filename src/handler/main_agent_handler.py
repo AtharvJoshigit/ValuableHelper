@@ -360,18 +360,18 @@ class MainAgent:
                     )
                 elif isinstance(msg["content"], list):
                     parts = []
-                    for item in msg["content"]:
-                        if isinstance(item, dict) and item.get("type") == "function_response":
-                            parts.append(
-                                types.Part(
-                                    function_response=types.FunctionResponse(
-                                        name=item["name"],
-                                        response=item["response"]
-                                    )
-                                )
-                            )
-                        else:
-                            parts.append(types.Part(text=str(item)))
+                    # for item in msg["content"]:
+                    #     if isinstance(item, dict) and item.get("type") == "function_response":
+                    #         parts.append(
+                    #             types.Part(
+                    #                 function_response=types.FunctionResponse(
+                    #                     name=item["name"],
+                    #                     response=item["response"]
+                    #                 )
+                    #             )
+                    #         )
+                    #     else:
+                    parts.append(types.Part(text=str(item)))
                     contents.append(types.Content(role="user", parts=parts))
             
             elif msg["role"] == "assistant":
