@@ -1,11 +1,9 @@
-# file: main_agent.py
-
+from logging import Logger
 from typing import Dict, Any, List, Optional
 import json
 from pathlib import Path
 from dataclasses import dataclass
 from src.client.universal_ai_client import UniversalAIClient
-# from agent_handler import AgentHandler, AgentToolResult
 from src.handler.agent_handler import AgentHandler
 
 @dataclass
@@ -17,10 +15,12 @@ class MainAgentConfig:
     skills_prompt_file: str = "whatcanido.md"
     max_iterations: int = 10
 
+logger = Logger("MainAgentLogger")
 
 class MainAgent:
     def __init__(self, config: MainAgentConfig, agent_handler: AgentHandler):
         self.config = config
+        self.status_message = None
         self.client = UniversalAIClient(
             provider=config.provider,
             model=config.model,
@@ -36,10 +36,10 @@ class MainAgent:
                 "role": "system",
                 "content": self.system_prompt
             })
-    
+        
     def _load_system_prompt(self) -> Optional[str]:
         try:
-            prompt_path = Path(self.config.system_prompt_file)
+            prompt_path = Path.cwd() / "whatMakesMe" / "whoami.md"
             if prompt_path.exists():
                 with open(prompt_path, 'r', encoding='utf-8') as f:
                     return f.read()
@@ -49,7 +49,8 @@ class MainAgent:
     
     def _load_skills_prompt(self) -> Optional[str]:
         try:
-            prompt_path = Path(self.config.skills_prompt_file)
+            prompt_path = Path.cwd() / "whatMakesMe" / "whatcanido.md"
+
             if prompt_path.exists():
                 with open(prompt_path, 'r', encoding='utf-8') as f:
                     return f.read()
@@ -66,10 +67,9 @@ class MainAgent:
         iteration = 0
         final_response = None
         agent_calls = []
-        
+        logger.info('----------------------MAIN AGENT CALL START----------------------')
         while iteration < self.config.max_iterations:
             iteration += 1
-            
             try:
                 if self.config.provider == "openai" or self.config.provider == "groq":
                     response = self._handle_openai_chat(agent_calls)
@@ -291,9 +291,10 @@ class MainAgent:
     def _handle_google_chat(self, previous_agent_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
         from google import genai
         from google.genai import types
-        
+
         tools_schema = self.agent_handler.get_tools_schema()
-        
+
+        # --- 1. Tool Formatting (Unchanged) ---
         formatted_tools = []
         for tool in tools_schema:
             properties = {}
@@ -313,7 +314,6 @@ class MainAgent:
                 
                 if prop_type == "ARRAY":
                     item_type = prop_details.get("items", {}).get("type", "STRING").upper()
-
                     properties[prop_name] = types.Schema(
                         type=types.Type.ARRAY,
                         items=types.Schema(
@@ -342,7 +342,8 @@ class MainAgent:
                     ]
                 )
             )
-        
+
+        # --- 2. History Formatting (Unchanged) ---
         messages = [msg for msg in self.conversation_history if msg["role"] != "system"]
         system_instruction = next((msg["content"] for msg in self.conversation_history if msg["role"] == "system"), None)
         
@@ -350,40 +351,32 @@ class MainAgent:
         
         contents = []
         for msg in messages:
+            parts = [] 
             if msg["role"] == "user":
                 if isinstance(msg["content"], str):
-                    contents.append(
-                        types.Content(
-                            role="user",
-                            parts=[types.Part(text=msg["content"])]
-                        )
-                    )
+                    parts.append(types.Part(text=msg["content"]))
                 elif isinstance(msg["content"], list):
-                    parts = []
-                    # for item in msg["content"]:
-                    #     if isinstance(item, dict) and item.get("type") == "function_response":
-                    #         parts.append(
-                    #             types.Part(
-                    #                 function_response=types.FunctionResponse(
-                    #                     name=item["name"],
-                    #                     response=item["response"]
-                    #                 )
-                    #             )
-                    #         )
-                    #     else:
-                    parts.append(types.Part(text=str(item)))
-                    contents.append(types.Content(role="user", parts=parts))
+                    for item in msg["content"]:
+                        if isinstance(item, dict) and item.get("type") == "function_response":
+                            parts.append(
+                                types.Part(
+                                    function_response=types.FunctionResponse(
+                                        name=item["name"],
+                                        response=item["response"]
+                                    )
+                                )
+                            )
+                        else:
+                            parts.append(types.Part(text=str(item)))
+                else:
+                    parts.append(types.Part(text=str(msg["content"])))
+                
+                contents.append(types.Content(role="user", parts=parts))
             
             elif msg["role"] == "assistant":
                 if isinstance(msg["content"], str):
-                    contents.append(
-                        types.Content(
-                            role="model",
-                            parts=[types.Part(text=msg["content"])]
-                        )
-                    )
+                    parts.append(types.Part(text=msg["content"]))
                 elif isinstance(msg["content"], list):
-                    parts = []
                     for item in msg["content"]:
                         if isinstance(item, dict) and item.get("type") == "function_call":
                             parts.append(
@@ -398,13 +391,23 @@ class MainAgent:
                             parts.append(types.Part(text=item["text"]))
                         else:
                             parts.append(types.Part(text=str(item)))
-                    contents.append(types.Content(role="model", parts=parts))
-        
+                else:
+                    parts.append(types.Part(text=str(msg["content"])))
+                
+                contents.append(types.Content(role="model", parts=parts))
+
+        # --- 3. Generation Config ---
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
-            tools=formatted_tools
+            tools=formatted_tools,
+            tool_config=types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(
+                    mode='AUTO'
+                )
+            )
         )
         
+        # --- 4. API Call ---
         response = client.models.generate_content(
             model=self.client.model,
             contents=contents,
@@ -420,70 +423,92 @@ class MainAgent:
         
         candidate = response.candidates[0]
         
+        # --- 5. Processing Response (FIXED LOGIC HERE) ---
         if candidate.content.parts:
             has_function_calls = False
-            assistant_content = []
-            text_parts = []
+            
+            # We will build these lists sequentially as we process the parts
+            assistant_content_for_history = []
+            function_responses_for_history = [] 
+            
+            final_text_parts = []
             agent_calls = previous_agent_calls.copy()
             
             for part in candidate.content.parts:
+                # CASE A: Function Call
                 if part.function_call:
                     has_function_calls = True
                     function_call = part.function_call
+                    thought_signature = getattr(part, 'thought_signature', None)
                     
-                    assistant_content.append({
+                    # 1. Record what the assistant did
+                    assistant_content_for_history.append({
                         "type": "function_call",
                         "name": function_call.name,
-                        "args": dict(function_call.args)
+                        "args": dict(function_call.args),
+                        "thought_signature": thought_signature
                     })
                     
-                    result = self.agent_handler.execute_agent(
-                        function_call.name,
-                        dict(function_call.args)
-                    )
-                    
+                    # 2. Execute the tool immediately
+                    try:
+                        result = self.agent_handler.execute_agent(
+                            function_call.name,
+                            dict(function_call.args)
+                        )
+                        # Prepare the result object
+                        execution_result = result.result
+                        execution_status = result.status
+                    except Exception as e:
+                        # Handle crash gracefully so chat doesn't die
+                        execution_result = f"Error executing tool: {str(e)}"
+                        execution_status = "error"
+
+                    # 3. Update global tracking
                     agent_calls.append({
                         "agent": function_call.name,
                         "arguments": dict(function_call.args),
-                        "result": result.result,
-                        "status": result.status
+                        "result": execution_result,
+                        "status": execution_status
                     })
-                
+                    
+                    # 4. Update Status UI
+                    if self.status_message:
+                        self.status_message.edit_text(str(execution_result) if execution_result else "Processing...")
+
+                    # 5. Build the response object immediately (No lookup needed!)
+                    function_responses_for_history.append({
+                        "type": "function_response",
+                        "name": function_call.name,
+                        "response": {
+                            "status": execution_status,
+                            "result": execution_result
+                        }
+                    })
+
+                # CASE B: Text
                 elif part.text:
-                    text_parts.append(part.text)
-                    assistant_content.append({
+                    final_text_parts.append(part.text)
+                    assistant_content_for_history.append({
                         "type": "text",
                         "text": part.text
                     })
+                    if self.status_message:
+                        self.status_message.edit_text(part.text)
+
+            final_response_text = "".join(final_text_parts) if final_text_parts else None
             
-            final_response = "".join(text_parts) if text_parts else None
-            
+            # --- 6. Update History and Return ---
             if has_function_calls:
+                # Append Assistant's Turn (Calls)
                 self.conversation_history.append({
                     "role": "assistant",
-                    "content": assistant_content
+                    "content": assistant_content_for_history
                 })
                 
-                function_responses = []
-                for content_item in assistant_content:
-                    if content_item.get("type") == "function_call":
-                        matching_result = next(
-                            (ac for ac in agent_calls if ac["agent"] == content_item["name"]),
-                            None
-                        )
-                        if matching_result:
-                            function_responses.append({
-                                "type": "function_response",
-                                "name": content_item["name"],
-                                "response": {
-                                    "status": matching_result["status"],
-                                    "result": matching_result["result"]
-                                }
-                            })
-                
+                # Append User's Turn (Tool Outputs)
                 self.conversation_history.append({
                     "role": "user",
-                    "content": function_responses
+                    "content": function_responses_for_history
                 })
                 
                 return {
@@ -491,16 +516,18 @@ class MainAgent:
                     "agent_calls": agent_calls
                 }
             else:
+                # Standard Text Response
                 self.conversation_history.append({
                     "role": "assistant",
-                    "content": final_response
+                    "content": final_response_text
                 })
+                
                 return {
                     "finished": True,
-                    "response": final_response,
+                    "response": final_response_text,
                     "agent_calls": agent_calls
                 }
-        
+
         return {
             "finished": True,
             "response": None,
@@ -531,8 +558,8 @@ def create_main_agent(
     provider: str = "openai",
     model: str = "gpt-4o-mini",
     api_key: Optional[str] = None,
-    system_prompt_file: str = "valuableHelper\whatMakesMe\whoami.md",
-    skills_prompt_File : str = "valuableHelper\whatMakesMe\whatcanido.md",
+    system_prompt_file: str = "'C:/Users/joshi/Research/valuableHelper/whatMakesMe/whoami.md'",
+    skills_prompt_File : str = "'C:/Users/joshi/Research/valuableHelper/whatMakesMe/whatcanido.md",
     max_iterations: int = 10
 ) -> MainAgent:
     from src.handler.agent_handler import create_agent_handler

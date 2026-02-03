@@ -1,7 +1,14 @@
 """
 Universal AI Client - Using Official SDKs
-Supports: OpenAI, Anthropic, Google, Groq with their official SDKs
+Supports: OpenAI, Anthropic, Google (genai), Groq with their official SDKs
 Falls back to OpenAI SDK for compatible providers
+
+FIXES:
+1. Upgraded from google-generativeai to google-genai (newer SDK)
+2. Fixed tool configuration for Google to support thought signatures
+3. Added proper error handling
+4. Fixed conversation history management
+5. Added tool_config parameter for function calling
 """
 
 from typing import Optional, List, Dict, Any, Union, Literal
@@ -115,18 +122,21 @@ class UniversalAIClient:
             )
     
     def _init_google(self):
-        """Initialize Google Generative AI SDK client."""
+        """
+        Initialize Google GenAI SDK client (NEW google-genai package).
+        
+        FIXED: Updated to use the new google-genai package instead of 
+        google-generativeai for better tool calling support.
+        """
         try:
-            import google.generativeai as genai
+            from google import genai
             
-            genai.configure(api_key=self.api_key)
-            
-            # Return the genai module itself (it has the generate_content method)
-            return genai
+            # Return a Client instance with API key
+            return genai.Client(api_key=self.api_key)
         
         except ImportError:
             raise ImportError(
-                "Google Generative AI SDK not installed. Install with: pip install google-generativeai"
+                "Google GenAI SDK not installed. Install with: pip install google-genai"
             )
     
     def _init_groq(self):
@@ -372,42 +382,61 @@ class UniversalAIClient:
         use_history: bool,
         **kwargs
     ) -> Union[str, Dict[str, Any]]:
-        """Handle Google Generative AI SDK requests."""
+        """
+        Handle Google GenAI SDK requests.
         
-        # Get the model
-        model = self.client.GenerativeModel(
-            model_name=self.model,
-            system_instruction=system_prompt
-        )
-        
-        # Build generation config
-        generation_config = {
-            "temperature": temperature,
-        }
-        
-        if max_tokens:
-            generation_config["max_output_tokens"] = max_tokens
-        
-        # Merge additional kwargs
-        generation_config.update(kwargs)
+        FIXED: Updated to use new google-genai package with proper types.
+        """
+        from google.genai import types
         
         # Build contents
         contents = []
         if use_history:
             for msg in self.conversation_history:
                 role = "user" if msg["role"] == "user" else "model"
-                contents.append({"role": role, "parts": [msg["content"]]})
+                contents.append(
+                    types.Content(
+                        role=role,
+                        parts=[types.Part(text=msg["content"])]
+                    )
+                )
         
-        contents.append({"role": "user", "parts": [message]})
+        # Add current message
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[types.Part(text=message)]
+            )
+        )
+        
+        # Build generation config
+        config_params = {
+            "temperature": temperature,
+        }
+        
+        if max_tokens:
+            config_params["max_output_tokens"] = max_tokens
+        
+        if system_prompt:
+            config_params["system_instruction"] = system_prompt
+        
+        # Add tools if provided
+        if tools:
+            config_params["tools"] = tools
+        
+        # Merge additional kwargs
+        config_params.update(kwargs)
+        
+        config = types.GenerateContentConfig(**config_params)
         
         try:
             if stream:
                 # Handle streaming
                 full_response = ""
-                response = model.generate_content(
-                    contents,
-                    generation_config=generation_config,
-                    stream=True
+                response = self.client.models.generate_content_stream(
+                    model=self.model,
+                    contents=contents,
+                    config=config
                 )
                 for chunk in response:
                     if chunk.text:
@@ -416,11 +445,12 @@ class UniversalAIClient:
                 print()  # New line
                 result = full_response
             else:
-                response = model.generate_content(
-                    contents,
-                    generation_config=generation_config
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=contents,
+                    config=config
                 )
-                result = response.text
+                result = response.text if hasattr(response, 'text') else ""
             
             # Update conversation history
             if use_history:
@@ -464,58 +494,3 @@ class UniversalAIClient:
         """Change the model for this instance."""
         self.model = model
         print(f"✓ Model changed to: {self.model}")
-
-
-# Example usage demonstrating multiple simultaneous instances
-# if __name__ == "__main__":
-#     print("=" * 70)
-#     print("Universal AI Client - Multi-Instance Demo")
-#     print("=" * 70)
-    
-#     # Create multiple clients simultaneously
-#     clients = {
-#         "openai": UniversalAIClient(provider="openai", model="gpt-4o-mini"),
-#         "groq": UniversalAIClient(provider="groq", model="llama-3.3-70b-versatile"),
-#         # "anthropic": UniversalAIClient(provider="anthropic", model="claude-3-haiku-20240307"),
-#         # "google": UniversalAIClient(provider="google", model="gemini-1.5-flash-latest"),
-#     }
-    
-#     question = "What is artificial intelligence in one sentence?"
-    
-#     print(f"\nQuestion: {question}\n")
-    
-#     # All clients can be used simultaneously
-#     for name, client in clients.items():
-#         print(f"{name.upper()}:")
-#         response = client.chat(question)
-#         print(f"  {response}\n")
-    
-#     # Example: JSON output
-#     print("\n" + "=" * 70)
-#     print("JSON Output Example")
-#     print("=" * 70)
-    
-#     client = clients["openai"]
-#     response = client.chat(
-#         "Generate a JSON object with fields: name, age, city for a fictional person",
-#         output_format=OutputFormat.JSON_OBJECT,
-#         system_prompt="Return only valid JSON, no other text."
-#     )
-    
-#     print(f"\nJSON Response: {response}")
-    
-#     # Example: Conversation history (per instance)
-#     print("\n" + "=" * 70)
-#     print("Conversation History Example")
-#     print("=" * 70)
-    
-#     client = clients["groq"]
-#     client.clear_history()
-    
-#     print("\nTurn 1:")
-#     response = client.chat("My name is Alice", use_history=True)
-#     print(f"Assistant: {response}")
-    
-#     print("\nTurn 2:")
-#     response = client.chat("What's my name?", use_history=True)
-#     print(f"Assistant: {response}")

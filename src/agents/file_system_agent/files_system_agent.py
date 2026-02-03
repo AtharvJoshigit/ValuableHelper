@@ -1,12 +1,35 @@
+
+"""
+Filesystem Agent Factory - IMPROVED VERSION
+"""
+
 from typing import Optional
 from src.agents.file_system_agent.files_system_handler import LLMFileSystemAgent
 
 
 def create_filesystem_agent(
-    provider: str = "groq",
-    model: str = "groq/compound",
-    api_key: Optional[str] = None
+    provider: str = "google",
+    model: str = "gemini-3-pro-preview",  # Better model choice
+    api_key: Optional[str] = None,
+    debug: bool = True  # Enable debug by default
 ) -> LLMFileSystemAgent:
+    """
+    Create a filesystem agent with all tools configured.
+    
+    Args:
+        provider: AI provider (openai, anthropic, google, groq)
+        model: Model name
+        api_key: API key (optional, reads from env if not provided)
+        debug: Enable debug logging (recommended)
+    
+    Returns:
+        Configured LLMFileSystemAgent
+        
+    Example:
+        >>> agent = create_filesystem_agent(debug=True)
+        >>> result = agent.chat("Read the file src/config.py")
+        >>> print(result['response'])
+    """
     from src.agents.file_system_agent.tools.filesystem_tools import (
         get_current_working_directory,
         list_directory,
@@ -45,5 +68,6 @@ def create_filesystem_agent(
         provider=provider,
         model=model,
         filesystem_functions=functions,
-        api_key=api_key
+        api_key=api_key,
+        debug=debug
     )

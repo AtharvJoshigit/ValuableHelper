@@ -60,9 +60,11 @@ class AgentHandler:
         
         try:
             agent = self.agents[agent_name]
-            
+            print(agent)
             if hasattr(agent, 'chat'):
+                print(f"Executing agent '{agent_name}' with chat method and arguments: {arguments}")
                 result = agent.chat(**arguments)
+                print(f'Result from agent {agent_name}: {result}')
             elif callable(agent):
                 result = agent(**arguments)
             else:
@@ -81,6 +83,7 @@ class AgentHandler:
             )
         
         except Exception as e:
+            print(e)
             return AgentToolResult(
                 status="error",
                 agent_name=agent_name,
@@ -108,31 +111,79 @@ class AgentHandler:
 
 
 def create_agent_handler() -> AgentHandler:
-    from src.agents.file_system_agent.file_system_handler import create_filesystem_agent
+    from src.agents.file_system_agent.files_system_agent import create_filesystem_agent
     from src.agents.research_agent.ai_research_handler import AIResearchHandler
     
     handler = AgentHandler()
     
     filesystem_agent = create_filesystem_agent(
         provider="google",
-        model="gemini-3-flash-preview",
+        model="gemini-3-pro-preview",
     )
     
     handler.register_agent(
         agent_name="filesystem_operations",
         agent_instance=filesystem_agent,
-        description="Perform filesystem operations including reading, writing, listing, searching files and directories. Use this agent for any file system related tasks.",
+        description="""Perform filesystem operations including reading, writing, listing, searching files and directories.
+
+    IMPORTANT USAGE GUIDELINES:
+    - Be SPECIFIC about which operation you want (read, list, create, delete, etc.)
+    - Provide EXACT file paths when possible
+    - Use clear, explicit instructions
+
+    EXAMPLES:
+    ✅ Good: "Read the file src/config.py"
+    ✅ Good: "Use read_file to get contents of test.txt"
+    ✅ Good: "List the files in the src/ directory"
+    ❌ Bad: "Check out config.py" (ambiguous)
+    ❌ Bad: "Look at the src folder" (unclear operation)
+
+    AVAILABLE OPERATIONS:
+    - Read files: "Read the file [path]"
+    - List directories: "List files in [path]"
+    - Create files: "Create file [path] with content [text]"
+    - Delete files: "Delete the file [path]"
+    - Search files: "Search for files matching [pattern]"
+    - And more (move, copy, get info, etc.)
+
+    The agent will automatically preprocess your message for clarity, but explicit instructions work best.""",
+        
         parameters_schema={
             "type": "object",
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "Natural language description of the filesystem operation to perform"
+                    "description": "Natural language description of the filesystem operation to perform. Be specific and clear about which operation (read, list, create, delete, etc.) and which file/directory path."
                 },
                 "max_iterations": {
                     "type": "integer",
-                    "description": "Maximum number of tool execution iterations",
+                    "description": "Maximum number of tool execution iterations (default: 10). Increase for complex multi-step operations.",
                     "default": 10
+                },
+                "force_tool": {
+                    "type": "string",
+                    "description": "Optional: Force the agent to use a specific tool. Use when the agent consistently calls the wrong tool. Options: read_file, list_directory, create_file, delete_file, move_file, copy_file, search_files, etc.",
+                    "enum": [
+                        "read_file",
+                        "list_directory", 
+                        "create_file",
+                        "overwrite_file",
+                        "append_to_file",
+                        "create_directory",
+                        "delete_file",
+                        "delete_directory",
+                        "validate_path",
+                        "get_file_info",
+                        "move_file",
+                        "copy_file",
+                        "search_files",
+                        "get_current_working_directory"
+                    ]
+                },
+                "preprocess": {
+                    "type": "boolean",
+                    "description": "Whether to preprocess the message for clarity (default: true). Keeps enabled for best results.",
+                    "default": True
                 }
             },
             "required": ["message"]

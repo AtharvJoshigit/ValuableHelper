@@ -111,7 +111,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     agent = create_main_agent(
         provider="google",
-        model="gemini-3-flash-preview",
+        model="gemini-3-pro-preview",
     )
 
     # Store agent in user session
@@ -138,7 +138,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-@require_auth
+# @require_auth
 # async def myinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #     """Show user information."""
 #     user = update.effective_user
@@ -309,6 +309,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_message = await update.message.reply_text(f"🔍 `00`… please wait")
 
     try:
+        agent.status_message = status_message
         result = agent.chat(user_message)  # or agent.run(...)
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
