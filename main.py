@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
 
-from tele_bot import bot
-from src.handler.main_agent_handler import create_main_agent
+from src.tools.tele_bot import bot
+from src.main_agent.main_agent import create_main_agent
 
 
 
@@ -14,7 +14,7 @@ def main():
     
     agent = create_main_agent(
         provider="google",
-        model="gemini-2.5-flash",
+        model="gemini-3-pro-preview",
     )
     
     print("Main Agent initialized. Type 'exit' to quit, 'reset' to clear conversation.\n")

@@ -39,7 +39,7 @@ class MainAgent:
         
     def _load_system_prompt(self) -> Optional[str]:
         try:
-            prompt_path = Path.cwd() / "whatMakesMe" / "whoami.md"
+            prompt_path = Path.cwd() / "me" / "whoami.md"
             if prompt_path.exists():
                 with open(prompt_path, 'r', encoding='utf-8') as f:
                     return f.read()
@@ -378,7 +378,15 @@ class MainAgent:
                     parts.append(types.Part(text=msg["content"]))
                 elif isinstance(msg["content"], list):
                     for item in msg["content"]:
-                        if isinstance(item, dict) and item.get("type") == "function_call":
+                        if item.get("type") == "thought":
+                            # Reconstruct the thought part with signature
+                            parts.append(
+                                types.Part(
+                                    thought=item["thought"],
+                                    thought_signature=item.get("signature")
+                                )
+                            )
+                        elif isinstance(item, dict) and item.get("type") == "function_call":
                             parts.append(
                                 types.Part(
                                     function_call=types.FunctionCall(
@@ -435,6 +443,13 @@ class MainAgent:
             agent_calls = previous_agent_calls.copy()
             
             for part in candidate.content.parts:
+
+                if hasattr(part, 'thought') and part.thought:
+                    assistant_content_for_history.append({
+                        "type": "thought",
+                        "thought": part.thought,
+                        "signature": getattr(part, 'thought_signature', None)
+                    })
                 # CASE A: Function Call
                 if part.function_call:
                     has_function_calls = True
@@ -558,8 +573,8 @@ def create_main_agent(
     provider: str = "openai",
     model: str = "gpt-4o-mini",
     api_key: Optional[str] = None,
-    system_prompt_file: str = "'C:/Users/joshi/Research/valuableHelper/whatMakesMe/whoami.md'",
-    skills_prompt_File : str = "'C:/Users/joshi/Research/valuableHelper/whatMakesMe/whatcanido.md",
+    system_prompt_file: str = "'C:/Users/joshi/Research/valuableHelper/me/whoami.md'",
+    skills_prompt_File : str = "'C:/Users/joshi/Research/valuableHelper/me/skills",
     max_iterations: int = 10
 ) -> MainAgent:
     from src.handler.agent_handler import create_agent_handler
