@@ -130,7 +130,7 @@ class Agent:
                     yield StreamChunk(content="\n\n✅ Task completed!\n")
                     return
                 # Execute tools and stream results
-                yield StreamChunk(content=f"\n\n🔧 Executing {len(tool_calls)} tool(s) in parallel...\n")
+                yield StreamChunk(content=f"\n\n🔧 Executing {len(tool_calls)} tool(s)/agents in parallel...\n")
 
                 task_to_info = {}
                 for i, call in enumerate(tool_calls):

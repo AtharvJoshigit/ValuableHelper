@@ -23,7 +23,7 @@ class SystemOperatorAgent(BaseAgent):
         registry.register(CreateFileTool(file_path='.', content='..'))
 
         # Register System/Command Tools
-        registry.register(RunCommandTool(command='ls'))
+        # registry.register(RunCommandTool(command='ls'))
 
         #Approval tool 
         registry.register(RequestApprovalTool(action_type="create_file", action_details={"summery": "Initializing the object"}))

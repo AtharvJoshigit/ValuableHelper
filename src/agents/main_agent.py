@@ -16,7 +16,8 @@ class MainAgent(BaseAgent):
         registry.register(AgentWrapper(
             agent=operator_agent,
             name="system_operator",
-            description="Use this tool for file operations (create/list/read) or to run shell commands."
+            description="Use this tool for file operations (create/list/read) or to run shell commands.",
+            stream=True
         ))
 
         return registry
