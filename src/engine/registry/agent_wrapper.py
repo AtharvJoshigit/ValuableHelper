@@ -16,8 +16,7 @@ class AgentWrapper(BaseTool):
     # Private attribute to store the agent instance (not included in JSON schema)
     _agent: Any = PrivateAttr()
     _clear_memory: bool = PrivateAttr(default=True)
-    _stream : bool = PrivateAttr(default=True)
-    def __init__(self, agent: Any, name: str, description: str, clear_memory: bool = True, stream: bool=True):
+    def __init__(self, agent: Any, name: str, description: str, clear_memory: bool = True):
         """
         Initialize the wrapper.
         
@@ -29,7 +28,6 @@ class AgentWrapper(BaseTool):
         super().__init__(name=name, description=description, task_input="")
         self._agent = agent
         self._clear_memory = clear_memory
-        self._stream = stream
 
     def execute(self, **kwargs) -> Any:
         """
@@ -56,9 +54,6 @@ class AgentWrapper(BaseTool):
                     self._agent.memory.add_message(
                         Message(role=Role.SYSTEM, content=self._agent.system_prompt)
                     )
-            if self.stream :
-                result = await self._agent.stream(input_text)
-            else:
                 result = await self._agent.run(input_text)
             return {"status": "success", "result": result}
         except Exception as e:
