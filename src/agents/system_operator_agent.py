@@ -12,7 +12,7 @@ class SystemOperatorAgent(BaseAgent):
     A specialized agent for system operations, file management, and command execution.
     """
     def _get_provider(self) -> BaseProvider:
-        return GoogleProvider(model_id="gemini-3-flash-preview")
+        return GoogleProvider(model_id="gemini-2.5-flash")
         
     def _get_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -23,10 +23,10 @@ class SystemOperatorAgent(BaseAgent):
         registry.register(CreateFileTool(file_path='.', content='..'))
 
         # Register System/Command Tools
-        # registry.register(RunCommandTool(command='ls'))
+        registry.register(RunCommandTool(command='ls'))
 
         #Approval tool 
-        registry.register(RequestApprovalTool(action_type="create_file", action_details={"summery": "Initializing the object"}))
+        # registry.register(RequestApprovalTool(action_type="create_file", action_details={"summery": "Initializing the object"}))
 
         return registry
 

@@ -1,3 +1,4 @@
+
 # Skills & Capabilities
 
 ## Framework Core
@@ -8,13 +9,16 @@
 - **Hierarchical Agents**: Wrapping full agents as tools to allow for complex, nested multi-agent systems.
 - **Context Management**: Robust handling of conversation history, ensuring valid message sequences (system, user, assistant, tool).
 
-## Implemented Tools
-- **Filesystem Tools**: 
-  - `list_directory`: Explore the workspace.
-  - `read_file`: Access file contents.
-  - `create_file`: Write new files (with path creation).
-  - `delete_file`: Remove files.
-- **System Operator**: Sub-agent capable of performing multi-step file operations and shell commands.
+## Core Capabilities (Implemented Tools)
+
+- **Directory Listing**: The ability to inspect and list the contents (files and subdirectories) of any specified directory or the current working directory within the file system.
+    *   *Knowledge File:* `me/knowledge/filesystem/directory_listing.md`
+
+- **File Reading**: The capability to access and retrieve the textual content of any file located at a given path within the file system.
+    *   *Knowledge File:* `me/knowledge/filesystem/file_reading.md`
+
+- **Advanced System Operations**: The capacity to delegate complex system-level tasks to a specialized sub-agent. This includes performing advanced file manipulations (such as creating, modifying, or deleting files), as well as executing arbitrary shell commands to interact directly with the operating system.
+    *   *Knowledge File:* `me/knowledge/system_operations/advanced_system_operations.md`
 
 ## Supported Providers
 - **Google (Gemini)**: Full integration with Gemini 1.5 Pro and Flash models, including tool-calling support.

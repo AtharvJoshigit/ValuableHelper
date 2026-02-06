@@ -6,7 +6,7 @@ from engine.registry.base_tool import BaseTool
 class RunCommandTool(BaseTool):
     name: str = "run_command"
     description: str = "Execute a shell command on the local system. Returns stdout, stderr, and exit code."
-    command: str = Field(..., description="The shell command to execute.")
+    command: Optional[str] = Field(default=None, description="The shell command to execute.")
     allowed_commands: Optional[List[str]] = Field(
         default=None,
         description="Optional list of whitelisted commands. If not provided, uses default safe commands.",

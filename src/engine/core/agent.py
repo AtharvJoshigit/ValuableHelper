@@ -78,7 +78,8 @@ class Agent:
                 # 5. Execute tool calls
                 logger.info(f"Executing {len(response.tool_calls)} tool calls")
                 tool_results = await self.execution_engine.execute_tool_calls(response.tool_calls)
-                
+                for tool in tool_results :
+                    logger.info(f'Executed tool {tool.name} and id: {tool.tool_call_id}')
                 # 6. Add results to memory
                 self.memory.add_message(Message(role=Role.TOOL, tool_results=tool_results))
                 

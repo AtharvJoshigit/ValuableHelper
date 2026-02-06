@@ -1,4 +1,5 @@
 from enum import Enum
+from nt import O_TEMPORARY
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -33,7 +34,7 @@ class Message(BaseModel):
 class UsageMetadata(BaseModel):
     model_config = ConfigDict(extra='allow')
     input_tokens: int = 0
-    output_tokens: int = 0
+    output_tokens: Optional[int] = 0
     total_tokens: int = 0
 
 class AgentResponse(BaseModel):

@@ -1,9 +1,16 @@
 # Universal Agent Framework - Upcoming Work
 
-## Documentation & Knowledge Base (me/)
-- [ ] Populate `me/overview.md` with the project vision.
-- [ ] Populate `me/skills.md` with current technical capabilities.
-- [ ] Initialize `me/lessons.md` with initial development patterns.
+## Recent Wins
+- [x] **Coder Agent Integrated**: Dedicated agent for code generation/review is fully operational and integrated into `MainAgent`.
+- [x] **System Documentation**: Full architecture mapped in `me/system/`.
+
+## Phase 0: System Documentation & Architecture Mapping (Complete)
+- [x] **Engine Core Exploration**: Documented in `me/system/engine.md`
+- [x] **Providers & Models Exploration**: Documented in `me/system/providers.md`
+- [x] **Registry & Tools Exploration**: Documented in `me/system/tools.md`
+- [x] **Agent Archetypes Exploration**: Documented in `me/system/agents.md`
+- [x] **Services Exploration**: Documented in `me/system/interfaces.md`
+- [x] **System Synthesis**: Updated `me/overview.md`
 
 ## Goal: advanced Provider & Tool Capabilities
 
@@ -23,6 +30,7 @@
 - [ ] **Ollama Provider**: Local model support
 
 ## Phase 9: Multi-Agent Patterns
+- [ ] **Context Management Tool**: Tool for MainAgent to explicitly clear/manage sub-agent memory ("wipe slate").
 - [ ] **Supervisor Pattern**: Dedicated agent to coordinate multiple specialized sub-agents
 - [ ] **Sequential Chain**: Pre-defined sequence of agent tasks
 - [ ] **State Shared Memory**: Allowing agents to share a common blackboard/state
@@ -32,3 +40,10 @@
 - [ ] **Advanced Guardrails**: Input/Output PII scrubbing and safety checks
 - [ ] **Persistence**: Database-backed memory for long-running conversations
 - [ ] **CLI Interface**: A robust terminal UI for interacting with framework agents
+- [ ] **Coder Agent Hardening**: Increase timeouts and implement partial file reading to prevent stalls.
+
+## Phase 11: Telegram Interface Modernization
+- [ ] [Telegram Bot Modernization Plan](tasks/modernize_telegram_bot.md)
+
+## Completed
+- [x] **Agent Archetypes Exploration**

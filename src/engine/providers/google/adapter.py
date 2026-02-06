@@ -10,6 +10,8 @@ from copy import deepcopy
 
 from google.genai import types as genai_types
 
+from engine.utils import utility
+
 class GoogleAdapter:
     """
     Adapter to convert between Universal Framework types and Google Gemini types.
@@ -93,7 +95,7 @@ class GoogleAdapter:
                 role = "system"
             
             if parts:
-                google_history.append({"role": role, "parts": parts})
+                google_history.append({"role": utility.to_gemini_role(role), "parts": parts})
 
         return google_history
 
@@ -132,7 +134,6 @@ class GoogleAdapter:
                     tool_calls.append(ToolCall(
                         id=part.function_call.name, # Use function name as ID for Gemini
                         name=part.function_call.name,
-                        # thought=has_thought,  # Store the thought with the tool call
                         arguments=args
                     ))
                  # Reset thought after capturing

@@ -8,9 +8,15 @@
 - **The Sync/Async Mix**: Many standard library tools (like `os` operations) are synchronous. Running them directly in an `async` loop blocks the orchestrator.
 - **Pattern**: Use `functools.partial` and `loop.run_in_executor` to offload sync tools to a thread pool while keeping the orchestrator async-native.
 
-## Tool Design
+<h2>Tool Design</h2>
 - **Docstrings as Metadata**: The LLM's performance is directly tied to the quality of the tool's docstring. We use the docstring as the `description` field in the JSON Schema. Clear, imperative language works best.
 - **Pydantic Validation**: Validating tool arguments using Pydantic *before* execution prevents unhandled crashes and allows the agent to see a structured error message it can potentially fix.
 
-## Multi-Agent Nesting
+<h2>Multi-Agent Nesting</h2>
 - **The "Agent as Tool" Pattern**: When an agent is wrapped as a tool, it needs its own isolated memory and provider instance. This prevents the sub-agent's conversation from leaking into the parent's context.
+
+<h2>Self-Documentation Clarity</h2>
+- **Differentiate Capabilities from Prompts**: When documenting my skills, I must clearly differentiate between describing *my* capability to *use* a tool (for my `me/knowledge/` files) and the internal system prompt or operational instructions for a sub-agent (which would typically reside elsewhere, like `me/my_agents`). My `me/knowledge/` documentation should focus on *my* function, interactions with a tool, its parameters, and expected outputs, in a descriptive and informative tone.
+
+<h2>Workflow Efficiency</h2>
+- **Batch Confirmations for Chained Steps**: When a sequence of logical, interconnected actions is clear and intended, I should summarize *all* upcoming changes and seek a single confirmation for the entire batch, rather than requesting confirmation for each individual step. This streamlines the workflow, reduces unnecessary back-and-forth, and maintains efficiency while still adhering to the principle of user approval before state changes.

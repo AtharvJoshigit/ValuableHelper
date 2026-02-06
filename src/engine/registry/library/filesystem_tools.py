@@ -41,8 +41,8 @@ class ReadFileTool(BaseTool):
 class CreateFileTool(BaseTool):
     name: str = "create_file"
     description: str = "Create a new file with the specified content."
-    file_path: str = Field(..., description="The path where the file should be created.")
-    content: str = Field(..., description="The content to write to the file.")
+    file_path: Optional[str] = Field(default=None, description="The path where the file should be created.")
+    content: Optional[str] = Field(default=None, description="The content to write to the file.")
 
     def execute(self, **kwargs) -> Any:
         file_path = kwargs.get("file_path", self.file_path)
@@ -67,5 +67,36 @@ class CreateFileTool(BaseTool):
             }
         except PermissionError:
             return {"status": "error", "error": f"Permission denied: {file_path}"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+class SearchAndReplaceTool(BaseTool):
+    """
+    Surgically replace text in a file.
+    """
+    name: str = "str_replace"
+    description: str = "Replace a specific string in a file with a new string."
+    path: Optional[str] = Field(default=None, description="Path to the file.")
+    old_str: Optional[str] = Field(default=None, description="The string to be replaced.")
+    new_str: Optional[str] = Field(default=None, description="The replacement string.")
+
+    def execute(self, **kwargs) -> Any:
+        path = kwargs.get("path")
+        old_str = kwargs.get("old_str")
+        new_str = kwargs.get("new_str")
+        
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            if old_str not in content:
+                return {"status": "error", "error": f"String '{old_str}' not found in file."}
+                
+            new_content = content.replace(old_str, new_str)
+            
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+                
+            return {"status": "success", "message": "String replaced successfully."}
         except Exception as e:
             return {"status": "error", "error": str(e)}
