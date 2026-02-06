@@ -14,7 +14,7 @@ def main():
     
     agent = create_main_agent(
         provider="google",
-        model="gemini-3-pro-preview",
+        model="gemini-3-flash-preview",
     )
     
     print("Main Agent initialized. Type 'exit' to quit, 'reset' to clear conversation.\n")
