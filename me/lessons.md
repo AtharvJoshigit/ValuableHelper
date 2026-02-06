@@ -20,3 +20,6 @@
 
 <h2>Workflow Efficiency</h2>
 - **Batch Confirmations for Chained Steps**: When a sequence of logical, interconnected actions is clear and intended, I should summarize *all* upcoming changes and seek a single confirmation for the entire batch, rather than requesting confirmation for each individual step. This streamlines the workflow, reduces unnecessary back-and-forth, and maintains efficiency while still adhering to the principle of user approval before state changes.
+
+## Quality Assurance & Verification
+- **Trust but Verify (Code Generation)**: When a sub-agent (like `coder_agent`) generates code, do not assume it is syntactically correct just because the logic looks sound. Always verify code changes, especially string formatting and multi-line strings, by running a syntax check (e.g., `python -m py_compile <file>`) before confirming the task is complete. Blindly writing code to disk without verification leads to simple but breaking errors.

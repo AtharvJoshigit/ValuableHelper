@@ -10,19 +10,19 @@ The goal is to transform `src/services/telegram_bot` from a legacy research-bot 
 - **Entry Point**: `src/main.py` is missing or disconnected.
 
 ## Phase 1: Configuration & Hygiene
-- [ ] **Refactor `config.py`**: 
+- [x] **Refactor `config.py`**: 
     - Simplify auth to `USER_ID` whitelist (most secure/practical for personal assistant).
     - Load tokens/secrets strictly from environment variables.
-- [ ] **Clean `messages.py`**:
+- [x] **Clean `messages.py`**:
     - Remove legacy "Research" command messages.
     - Add new messages for "Tool Permission Requested" and "Agent Thinking".
 
 ## Phase 2: Core Bot Logic (`bot.py`)
-- [ ] **Remove Legacy Code**: Delete `AIResearchHandler` and `researchTopic` commands.
-- [ ] **Integrate `MainAgent`**: 
+- [x] **Remove Legacy Code**: Delete `AIResearchHandler` and `researchTopic` commands.
+- [x] **Integrate `MainAgent`**: 
     - Initialize `MainAgent` on `/start`.
     - Persist agent instance in `context.user_data`.
-- [ ] **Async Message Handling**:
+- [x] **Async Message Handling**:
     - Use `agent.stream()` instead of `run()` to provide real-time feedback.
     - Implement a "Typing..." indicator or periodic status updates (e.g., "🔧 Executing tool...").
 
@@ -38,7 +38,7 @@ The goal is to transform `src/services/telegram_bot` from a legacy research-bot 
     - (Future) Render Inline Buttons [✅ Approve] [❌ Deny] that inject the specific permission token.
 
 ## Phase 4: Entry Point & Deployment
-- [ ] **Create `src/main.py`**: A clean entry point that loads env vars and starts the bot polling.
+- [x] **Create `src/main.py`**: A clean entry point that loads env vars and starts the bot polling.
 - [ ] **Docker/Process Manager**: Ensure the bot auto-restarts on crash.
 
 ## Phase 5: Coder Agent Optimization

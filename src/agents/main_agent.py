@@ -1,7 +1,8 @@
-from agents.system_operator_agent import SystemOperatorAgent
-from agents.coder_agent import CoderAgent
+from .system_operator_agent import SystemOperatorAgent
+from .coder_agent import CoderAgent
 from engine.core.agent import Agent
 from engine.registry.library.filesystem_tools import ListDirectoryTool, ReadFileTool
+from engine.registry.library.telegram_tools import SendTelegramMessageTool
 from engine.registry.tool_registry import ToolRegistry
 from .base_agent import BaseAgent
 from engine.registry.agent_wrapper import AgentWrapper
@@ -12,6 +13,7 @@ class MainAgent(BaseAgent):
         registry = ToolRegistry()
         registry.register(ListDirectoryTool())
         registry.register(ReadFileTool())
+        registry.register(SendTelegramMessageTool())
         
         # System Operator for low-level file/shell ops
         operator_agent = SystemOperatorAgent().start()
@@ -37,4 +39,4 @@ class MainAgent(BaseAgent):
         return self.create(system_prompt_file="whoami.md")
 
 def create_main_agent() -> Agent:
-    return MainAgent({'model_id': 'gemini-3-pro-preview'}).start()
+    return MainAgent({'model_id': 'gemini-2.5-pro', 'max_steps': 25}).start()

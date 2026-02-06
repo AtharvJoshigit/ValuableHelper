@@ -3,6 +3,9 @@ from typing import Any, List, Optional
 from pydantic import Field
 from engine.registry.base_tool import BaseTool
 
+# Define constant for defaults
+DEFAULT_SAFE_COMMANDS = ["ls", "pwd", "cat", "echo", "mkdir", "python", "pip"]
+
 class RunCommandTool(BaseTool):
     name: str = "run_command"
     description: str = "Execute a shell command on the local system. Returns stdout, stderr, and exit code."
@@ -14,27 +17,46 @@ class RunCommandTool(BaseTool):
         json_schema_extra={
             "type": "array",
             "items": {"type": "string"},
-            "default": ["ls", "pwd", "cat", "echo", "mkdir"]
+            "default": DEFAULT_SAFE_COMMANDS
         }
     )
 
-    
-    
     def execute(self, **kwargs) -> Any:
         command = kwargs.get("command", self.command)
+        
+        # 1. Check kwargs for override
+        # 2. Check self.allowed_commands (instance config)
+        # 3. Fallback to global defaults
+        runtime_allowed = kwargs.get("allowed_commands")
+        if runtime_allowed is not None:
+            allowed = runtime_allowed
+        elif self.allowed_commands is not None:
+            allowed = self.allowed_commands
+        else:
+            allowed = DEFAULT_SAFE_COMMANDS
+        
+        # Ensure command is not None or empty
+        if not command:
+            return {"error": "No command provided."}
+
         # Validate command against whitelist
-        cmd_base = command.split()[0] if command else ""
-        if cmd_base not in self.allowed_commands:
-            return {"error": f"Command '{cmd_base}' not allowed. Allowed: {self.allowed_commands}"}
+        cmd_parts = command.split()
+        if not cmd_parts:
+             return {"error": "Empty command provided."}
+
+        cmd_base = cmd_parts[0]
+        
+        if cmd_base not in allowed:
+            return {"error": f"Command '{cmd_base}' not allowed. Allowed: {allowed}"}
         
         try:
             # Use shell=False with list for better security
             result = subprocess.run(
-                command.split(),  # Split into list
+                cmd_parts,  # Split into list
                 shell=False,  # More secure
                 capture_output=True,
                 text=True,
-                timeout=30  # 5 min seems too long, consider 30s
+                timeout=30
             )
             return {
                 "stdout": result.stdout,

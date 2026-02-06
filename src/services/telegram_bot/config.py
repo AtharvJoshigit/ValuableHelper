@@ -1,30 +1,43 @@
-# tele_bot/config.py
 import os
+from typing import List, Optional
+from dotenv import load_dotenv
 
-# ========== PRIVACY SETTINGS ==========
-# Method 1: Whitelist specific user IDs (MOST SECURE)
-# To get your user ID, message @userinfobot on Telegram
+# Load environment variables
+load_dotenv()
 
-AUTHORIZED_USERS = [
-    785564995,  # Replace with actual user IDs
-]
-ADMIN_USER_ID = 785564995 # The user ID of the main administrator. This user has elevated permissions.
+# ========== TELEGRAM BOT CONFIGURATION ==========
 
-# Method 2: Whitelist usernames (less secure - usernames can change)
-AUTHORIZED_USERNAMES = [
-    # "your_username",  # Replace with your Telegram username (without @)
-    # "friend_username",  # Add more if needed
-]
+# 1. Load Bot Token
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
-# Method 3: Use a secret password for initial access
-# It is highly recommended to set this via an environment variable for security.
-# Example: SECRET_PASSWORD = os.getenv("BOT_SECRET_PASSWORD", "a_default_fallback_password")
-SECRET_PASSWORD = os.getenv("BOT_SECRET_PASSWORD", "MySecretPass123")
-authenticated_users = set()  # Will store user IDs after they authenticate
+def _parse_int_list(env_var_name: str) -> List[int]:
+    """Parses a comma-separated string of integers from an environment variable."""
+    raw_str = os.getenv(env_var_name, "")
+    if not raw_str:
+        return []
+    
+    valid_ids = []
+    for item in raw_str.split(","):
+        cleaned = item.strip()
+        if cleaned.isdigit():
+            valid_ids.append(int(cleaned))
+        else:
+            print(f"Warning: Skipped non-numeric value '{cleaned}' in {env_var_name}")
+    return valid_ids
 
-# Choose your privacy mode:
-# "USER_ID"  - Only specific user IDs (most secure, defined in AUTHORIZED_USERS)
-# "USERNAME" - Only specific usernames (less secure, defined in AUTHORIZED_USERNAMES)
-# "PASSWORD" - Anyone with the correct password can access (password set in SECRET_PASSWORD)
-# "HYBRID"   - Requires both a whitelisted User ID and the correct password (extra security)
-PRIVACY_MODE = "USER_ID" # Set your desired privacy mode here
+# 2. Load Authorized Users (Whitelist)
+AUTHORIZED_USERS: List[int] = _parse_int_list("AUTHORIZED_USERS")
+
+# 3. Define Admin Users
+# Tries to load specific admins, otherwise defaults to the first authorized user.
+ADMIN_USER_IDS: List[int] = _parse_int_list("ADMIN_USER_IDS")
+
+# Fallback: If no admins defined, the first authorized user becomes admin
+if not ADMIN_USER_IDS and AUTHORIZED_USERS:
+    ADMIN_USER_IDS = [AUTHORIZED_USERS[0]]
+
+# Validation Warning
+if not TELEGRAM_BOT_TOKEN:
+    print("CRITICAL WARNING: TELEGRAM_BOT_TOKEN is missing from environment variables.")
+if not AUTHORIZED_USERS:
+    print("WARNING: AUTHORIZED_USERS is empty. Bot will be inaccessible until users are added.")
