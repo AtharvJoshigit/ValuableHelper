@@ -31,7 +31,7 @@ class ExecutionEngine:
             
         return await asyncio.gather(*tasks)
 
-    async def _execute_single_tool(self, call: ToolCall, timeout: float = 120.0) -> ToolResult:
+    async def _execute_single_tool(self, call: ToolCall, timeout: float = 300.0) -> ToolResult:
         """
         Execute a single tool call safely, supporting both sync and async tools.
         """

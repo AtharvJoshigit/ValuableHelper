@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 from engine.core.agent import Agent
 from engine.providers.base_provider import BaseProvider
 from engine.providers.google.provider import GoogleProvider
@@ -9,8 +9,9 @@ class BaseAgent:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
         # Set default model if not in config
-        self.model_id = self.config.get("model_id", "gemini-2.0-flash-exp")
-        self.max_steps = self.config.get("max_step", 10)
+        self.model_id = self.config.get("model_id", "gemini-2.5-pro")
+        self.max_steps = self.config.get("max_steps", 10) # Fixed typo: max_step -> max_steps
+        self.sensitive_tool_names: Set[str] = self.config.get("sensitive_tool_names", set())
 
     def _get_project_root(self) -> Path:
         """Dynamically finds the project root."""
@@ -27,6 +28,7 @@ class BaseAgent:
         return "You are a helpful assistant."
 
     def _get_provider(self) -> BaseProvider:
+        print(self.model_id)
         return GoogleProvider(model_id=self.model_id)
 
     def _get_registry(self) -> ToolRegistry:
@@ -39,5 +41,6 @@ class BaseAgent:
             provider=self._get_provider(),
             registry=self._get_registry(),
             system_prompt=self._load_prompt(system_prompt_file),
-            max_steps=self.max_steps
+            max_steps=self.max_steps,
+            sensitive_tool_names=self.sensitive_tool_names
         )

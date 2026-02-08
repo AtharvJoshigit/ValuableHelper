@@ -47,5 +47,7 @@ class StreamChunk(BaseModel):
     model_config = ConfigDict(extra='allow')
     content: Optional[str] = None
     tool_call: Optional[ToolCall] = None
+    tool_result: Optional[ToolResult] = None
+    permission_request: Optional[List[ToolCall]] = None
     usage: Optional[UsageMetadata] = None
     finish_reason: Optional[str] = None

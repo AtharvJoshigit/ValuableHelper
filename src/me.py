@@ -1,4 +1,5 @@
 import asyncio
+from cgi import print_arguments
 import sys
 from agents import main_agent
 
@@ -26,8 +27,16 @@ async def chat():
 
             print("\nHelper: ", end="", flush=True)
             async for chunk in me.stream(user_input):
-                if chunk.content:
+                if chunk.tool_call : 
+                    print(chunk.tool_call, end="", flush=True)
+                elif chunk.tool_result: 
+                    print(chunk.tool_result, end="", flush=True)
+                elif chunk.finish_reason: 
+                    print(chunk.finish_reason, end="", flush=True)
+                elif chunk.content:
                     print(chunk.content, end="", flush=True)
+                else : 
+                    print(chunk.usage, end="", flush=True)
             print("\n" + "-" * 40)
 
     except KeyboardInterrupt: # Handles Ctrl+C
