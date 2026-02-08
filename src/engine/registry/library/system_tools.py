@@ -4,7 +4,7 @@ from pydantic import Field
 from engine.registry.base_tool import BaseTool
 
 # Define constant for defaults
-DEFAULT_SAFE_COMMANDS = ["ls", "pwd", "cat", "echo", "mkdir", "python", "pip"]
+DEFAULT_SAFE_COMMANDS = ["ls", "pwd", "cat", "echo", "mkdir", "python", "pip", "mv", "cp", "touch", "grep", "find", "head", "tail", "sh", "git", "rm"]
 
 class RunCommandTool(BaseTool):
     name: str = "run_command"

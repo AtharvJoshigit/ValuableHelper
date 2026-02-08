@@ -15,6 +15,7 @@ from telegram.ext import (
 
 from engine.core.types import StreamChunk, ToolResult
 from agents.base_agent import BaseAgent
+from services.plan_director import PlanDirector
 
 # Configure Logging
 logging.basicConfig(
@@ -26,14 +27,38 @@ logger = logging.getLogger(__name__)
 # In production, use Redis or a database
 user_sessions: Dict[int, object] = {} # ChatID -> Agent Instance
 user_locks: Dict[int, asyncio.Lock] = {} # ChatID -> Lock
+last_active_chat_id: Optional[int] = None
+_application = None
+
+# Initialize PlanDirector (Global for now, as it manages the singleton TaskStore)
+# In a multi-user environment, we might need a PlanDirector per user/chat.
+# For now, we assume single-user or shared state for this MVP.
+plan_director = PlanDirector()
+plan_director.start()
 
 def get_or_create_agent(chat_id: int):
     if chat_id not in user_sessions:
         # Initialize a new agent for this user
-        # You can customize the config/prompt here
         logger.info(f"Creating new agent for chat_id={chat_id}")
         user_sessions[chat_id] = main_agent.create_main_agent()
     return user_sessions[chat_id]
+
+async def send_telegram_notification(chat_id: int, message: str):
+    """
+    Sends a notification message to the specified Telegram chat.
+    """
+    if _application is None:
+        logger.warning("Telegram application is not initialized. Cannot send notification.")
+        return
+
+    try:
+        await _application.bot.send_message(
+            chat_id=chat_id, 
+            text=message, 
+            parse_mode=constants.ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Failed to send Telegram notification to {chat_id}: {e}")
 
 def format_response(chunks: List[StreamChunk]) -> str:
     """
@@ -91,7 +116,7 @@ def format_response(chunks: List[StreamChunk]) -> str:
     return full_text.strip()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hi!.")
+    await update.message.reply_text("Hi! I'm your engineering partner. Let's get to work.")
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -100,7 +125,10 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Memory wiped. Starting fresh.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global last_active_chat_id
     chat_id = update.effective_chat.id
+    last_active_chat_id = chat_id
+    
     text = update.message.text
     
     if chat_id not in user_locks:
@@ -160,12 +188,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text(f"❌ Critical Error: {str(e)}")
 
 def run():
+    global _application
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         print("❌ Error: TELEGRAM_BOT_TOKEN not found in environment.")
         return
 
     app = ApplicationBuilder().token(token).build()
+    _application = app
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
