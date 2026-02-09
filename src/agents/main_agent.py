@@ -1,3 +1,4 @@
+from services.plan_director import PlanDirector
 from .system_operator_agent import SystemOperatorAgent
 from .coder_agent import CoderAgent
 from engine.core.agent import Agent
@@ -38,22 +39,6 @@ class MainAgent(BaseAgent):
         
         # --- Sub-Agents ---
         # Note: PlanManager is NOT here. We communicate via the TaskStore + Events.
-        
-        # 1. System Operator
-        operator_agent = SystemOperatorAgent().start()
-        registry.register(AgentWrapper(
-            agent=operator_agent,
-            name="system_operator",
-            description="Use this tool for file operations (create/list/read) or to run shell commands."
-        ))
-
-        # 2. Coder Agent
-        coder_agent = CoderAgent().start()
-        registry.register(AgentWrapper(
-            agent=coder_agent,
-            name="coder_agent",
-            description="Use this tool for writing high-quality code. Prefer this over writing code yourself."
-        ))
 
         return registry
 
@@ -62,6 +47,8 @@ class MainAgent(BaseAgent):
         return self.create(system_prompt_file="../me/whoami.md")
 
 def create_main_agent() -> Agent:
+    #Initializing PlanDirector with Main Agent 
+    PlanDirector().ensure_started()
     return MainAgent({
         'model_id': 'gemini-3-flash-preview', 
         'max_steps': 25,

@@ -15,7 +15,6 @@ dependencies = [
     "python-telegram-bot==20.7",
     "python-dotenv",
     "openai>=1.61.0",
-    "google-generativeai>=0.8.4",
     "anthropic>=0.45.0",
     "setuptools>=80.10.2",
     "wheel>=0.46.3",

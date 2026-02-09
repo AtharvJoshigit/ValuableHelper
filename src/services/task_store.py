@@ -80,8 +80,9 @@ class TaskStore:
         logger.info(f"Task added: {task.title} (ID: {task.id})")
         
         self._save()
-        
-        self._event_bus.publish(Event(type=EventType.TASK_CREATED, payload=task.model_dump()))
+
+        if task_priority != TaskPriority.SCHEDULED :
+            self._event_bus.publish(Event(type=EventType.TASK_CREATED, payload=task.model_dump()))
         return task
 
     def get_task(self, task_id: str) -> Optional[Task]:
@@ -244,7 +245,7 @@ class TaskStore:
         if not task:
             return None
         
-        allowed_fields = {'title', 'description', 'priority', 'status', 'parent_id', 'assigned_to', 'result_summary'}
+        allowed_fields = {'title', 'description', 'priority', 'status', 'parent_id', 'assigned_to', 'result_summary', 'context'}
         changes = {}
         
         for field, value in updates.items():

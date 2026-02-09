@@ -15,7 +15,7 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
     PAUSED = "paused"
     SCHEDULED = 'scheduled'
-    IN_REVIEW = 'review'
+    WAITING_REVIEW = 'waiting_review'
 
 class TaskPriority(str, Enum):
     LOW = "low"
@@ -23,6 +23,7 @@ class TaskPriority(str, Enum):
     HIGH = "high"
     CRITICAL = "critical"
 
+    SCHEDULED = "scheduled"
 class Task(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str

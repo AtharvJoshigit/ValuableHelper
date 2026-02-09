@@ -269,15 +269,22 @@ class ListSubtasksTool(BaseTool):
     description: str = "List all subtasks associated with a specific parent task ID."
     
     parent_id: Optional[str] = Field("ignore", description="The ID of the parent task")
-
+    task_id : Optional[str] = Field("ignore", description="The task_id, optional")
     _store: TaskStore = PrivateAttr()
 
     def __init__(self, store: TaskStore, **data):
         super().__init__(**data)
         self._store = store
-
+    def _get_parent_id(self, task_id):
+        
+        task = self._store.get_task(task_id)
+        if task: 
+            return task.get('parent_id', None)
+        
+        return None
+        
     async def execute(self, **kwargs) -> Any:
-        parent_id = kwargs.get("parent_id")
+        parent_id = kwargs.get("parent_id") or self._get_parent_id(kwargs.get('task_id'))
 
         if not parent_id:
             return "❌ Error: 'parent_id' is required for list_subtasks"

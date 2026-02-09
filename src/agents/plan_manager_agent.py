@@ -16,7 +16,7 @@ class PlanManagerAgent(BaseAgent):
 
     def _get_provider(self) -> BaseProvider:
         # Using a high-performance model for coding tasks
-        return GoogleProvider(model_id="gemini-2.5-preview")
+        return GoogleProvider(model_id="gemini-2.5-pro")
         
     def _get_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
