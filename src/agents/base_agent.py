@@ -17,12 +17,18 @@ class BaseAgent:
         """Dynamically finds the project root."""
         return Path(__file__).resolve().parents[2]
 
-    def _load_prompt(self, filename: str) -> str:
+    def _load_prompt(self, filenames: [str]) -> str:
         """Loads a markdown prompt from the me/ directory."""
+
         try:
-            prompt_path = self._get_project_root() / "me" / filename
-            if prompt_path.exists():
-                return prompt_path.read_text(encoding='utf-8')
+            prompt = ""
+            for filename in filenames :
+                prompt_path = self._get_project_root() / "me" / filename
+                if prompt_path.exists():
+                    prompt +=  prompt_path.read_text(encoding='utf-8')
+            
+            return prompt
+
         except Exception as e:
             print(f"⚠️  Error loading prompt {filename}: {e}")
         return "You are a helpful assistant."

@@ -37,4 +37,4 @@ class CoderAgent(BaseAgent):
 
     def start(self):
         """Initializes the agent with its specialized system prompt."""
-        return self.create(system_prompt_file="my_agents/coder_agent.md")
+        return self.create(system_prompt_file=["my_agents/coder_agent.md", "tools_call.md"])

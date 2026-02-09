@@ -163,7 +163,7 @@ class Agent:
                 self.memory.add_message(assistant_msg)
         
                 if not tool_calls:
-                    yield StreamChunk(content="\n\n✅ Task completed!\n")
+                    yield StreamChunk(content="\n\n-----------\n")
                     return
                 
                 # 2. Check for Sensitive Tools (HITL)

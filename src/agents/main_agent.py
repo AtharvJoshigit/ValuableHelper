@@ -1,3 +1,4 @@
+from turtle import update
 from services.plan_director import PlanDirector
 from .system_operator_agent import SystemOperatorAgent
 from .coder_agent import CoderAgent
@@ -5,7 +6,7 @@ from engine.core.agent import Agent
 from engine.registry.library.filesystem_tools import ListDirectoryTool, ReadFileTool
 from engine.registry.library.telegram_tools import SendTelegramMessageTool
 from tools.gmail_tool import GmailSearchTool, GmailReadTool, GmailSendTool
-from tools.task_store_tool import AddTaskTool, GetTaskTool, ListSubtasksTool, ListTasksTool, UpdateTaskStatusTool
+from tools.task_store_tool import AddTaskTool, DeleteTaskTool, GetTaskTool, ListSubtasksTool, ListTasksTool, UpdateTaskStatusTool, UpdateTaskTool
 from src.infrastructure.singleton import Singleton
 from engine.registry.tool_registry import ToolRegistry
 from .base_agent import BaseAgent
@@ -35,16 +36,33 @@ class MainAgent(BaseAgent):
         registry.register(ListTasksTool(task_store))
         registry.register(ListSubtasksTool(task_store))
         registry.register(GetTaskTool(task_store))
+        registry.register(DeleteTaskTool(task_store))
+        registry.register(UpdateTaskTool(task_store))
 
         
         # --- Sub-Agents ---
         # Note: PlanManager is NOT here. We communicate via the TaskStore + Events.
 
+        operator_agent = SystemOperatorAgent().start()
+        registry.register(AgentWrapper(
+            agent=operator_agent,
+            name="system_operator",
+            description="Delegate file operations and shell commands to this agent."
+        ))
+
+        # 3. The Brains: Coder Agent
+        coder_agent = CoderAgent().start()
+        registry.register(AgentWrapper(
+            agent=coder_agent,
+            name="coder_agent",
+            description="Delegate code writing, refactoring, and testing to this agent."
+        ))
+        
         return registry
 
 
     def start(self) -> Agent:
-        return self.create(system_prompt_file="../me/whoami.md")
+        return self.create(system_prompt_file=["whoami.md", "user.md", "memory.md", "tools_call.md"])
 
 def create_main_agent() -> Agent:
     #Initializing PlanDirector with Main Agent 

@@ -56,5 +56,5 @@ class PlanManagerAgent(BaseAgent):
 
     def start(self):
         return self.create(
-            system_prompt_file="my_agents/plan_manager_prompt.md",
+            system_prompt_file=["my_agents/plan_manager_prompt.md", "my_agents/memory.md", "tools_call.md"],
         )

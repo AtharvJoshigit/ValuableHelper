@@ -32,4 +32,4 @@ class SystemOperatorAgent(BaseAgent):
 
     def start(self):
         """Initializes the agent with its specialized system prompt."""
-        return self.create(system_prompt_file="my_agents/system_operator_agent.md")
+        return self.create(system_prompt_file=["my_agents/system_operator_agent.md", "tools_call.md"])
