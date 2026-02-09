@@ -4,7 +4,7 @@ from engine.core.agent import Agent
 from engine.registry.library.filesystem_tools import ListDirectoryTool, ReadFileTool
 from engine.registry.library.telegram_tools import SendTelegramMessageTool
 from tools.gmail_tool import GmailSearchTool, GmailReadTool, GmailSendTool
-from tools.task_store_tool import AddTaskTool, ListTasksTool, UpdateTaskStatusTool
+from tools.task_store_tool import AddTaskTool, GetTaskTool, ListSubtasksTool, ListTasksTool, UpdateTaskStatusTool
 from src.infrastructure.singleton import Singleton
 from engine.registry.tool_registry import ToolRegistry
 from .base_agent import BaseAgent
@@ -32,6 +32,9 @@ class MainAgent(BaseAgent):
         registry.register(AddTaskTool(task_store))
         registry.register(UpdateTaskStatusTool(task_store))
         registry.register(ListTasksTool(task_store))
+        registry.register(ListSubtasksTool(task_store))
+        registry.register(GetTaskTool(task_store))
+
         
         # --- Sub-Agents ---
         # Note: PlanManager is NOT here. We communicate via the TaskStore + Events.

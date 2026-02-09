@@ -1,4 +1,4 @@
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from pydantic import Field, PrivateAttr
 from engine.registry.base_tool import BaseTool
 from src.services.task_store import TaskStore
@@ -198,3 +198,98 @@ class RemoveTaskDependencyTool(BaseTool):
 
         res = await self._store.remove_dependency(task_id, dependency_id)
         return f"🔓 Dependency removed" if res else "❌ Failed to remove dependency"
+
+
+class UpdateTaskTool(BaseTool):
+    """
+    Tool to update multiple fields of a specific task.
+    """
+    name: str = "update_task"
+    description: str = "Update multiple fields of an existing task (title, description, priority, status, parent_id, etc.)."
+    
+    task_id: Optional[str] = Field("ignore", description="The ID of the task to update")
+    updates: Dict[str, Any] = Field(default_factory=dict, description="Dictionary of fields to update")
+
+    _store: TaskStore = PrivateAttr()
+
+    def __init__(self, store: TaskStore, **data):
+        super().__init__(**data)
+        self._store = store
+
+    async def execute(self, **kwargs) -> Any:
+        task_id = kwargs.get("task_id")
+        updates = kwargs.get("updates")
+
+        if not task_id or not updates:
+            return "❌ Error: 'task_id' and 'updates' dictionary are required"
+
+        try:
+            task = await self._store.update_task(task_id, updates)
+            if task:
+                return f"✅ Task Updated: {task.title} (ID: {task.id})"
+            else:
+                return f"❌ Task with ID '{task_id}' not found."
+        except Exception as e:
+            return f"❌ Error: {e}"
+
+
+class DeleteTaskTool(BaseTool):
+    """
+    Tool to delete a specific task by its ID.
+    """
+    name: str = "delete_task"
+    description: str = "Delete a task from the TaskStore by its ID. This will also remove it from dependencies of other tasks."
+    
+    task_id: Optional[str] = Field("ignore", description="The ID of the task to delete")
+
+    _store: TaskStore = PrivateAttr()
+
+    def __init__(self, store: TaskStore, **data):
+        super().__init__(**data)
+        self._store = store
+
+    async def execute(self, **kwargs) -> Any:
+        task_id = kwargs.get("task_id")
+
+        if not task_id:
+            return "❌ Error: 'task_id' is required for delete_task"
+
+        success = await self._store.delete_task(task_id)
+        if success:
+            return f"🗑️ Task Deleted: (ID: {task_id})"
+        else:
+            return f"❌ Task with ID '{task_id}' not found."
+
+
+class ListSubtasksTool(BaseTool):
+    """
+    Tool to list subtasks for a given parent task.
+    """
+    name: str = "list_subtasks"
+    description: str = "List all subtasks associated with a specific parent task ID."
+    
+    parent_id: Optional[str] = Field("ignore", description="The ID of the parent task")
+
+    _store: TaskStore = PrivateAttr()
+
+    def __init__(self, store: TaskStore, **data):
+        super().__init__(**data)
+        self._store = store
+
+    async def execute(self, **kwargs) -> Any:
+        parent_id = kwargs.get("parent_id")
+
+        if not parent_id:
+            return "❌ Error: 'parent_id' is required for list_subtasks"
+
+        try:
+            subtasks = self._store.get_subtasks(parent_id)
+            if not subtasks:
+                return f"No subtasks found for parent ID '{parent_id}'."
+            
+            output = f"📋 **Subtasks for Parent {parent_id}**"
+            for t in subtasks:
+                output += f"\n- {t.title} [{t.status.value}] (ID: {t.id})"
+            return output
+        except Exception as e:
+            return f"❌ Error: {e}"

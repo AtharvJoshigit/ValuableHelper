@@ -11,6 +11,7 @@ class EventType(str, Enum):
     TASK_STATUS_CHANGED = "task_status_changed"
     TASK_COMPLETED = "task_completed"
     TASK_FAILED = "task_failed"
+    TASK_DELETED = "task_deleted"
     PLAN_UPDATED = "plan_updated"
     SYSTEM_STARTUP = "system_startup"
     SYSTEM_SHUTDOWN = "system_shutdown"

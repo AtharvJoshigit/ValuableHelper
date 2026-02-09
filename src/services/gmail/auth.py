@@ -17,7 +17,7 @@ load_dotenv()
 
 # Define the paths for credentials and token files.
 SECRETS_DIR = Path(os.getenv("GMAIL_SECRETS_DIR", "config/secrets"))
-# SECRETS_DIR.mkdir(exist_ok=True)  # Ensure the directory exists
+SECRETS_DIR.mkdir(exist_ok=True)  # Ensure the directory exists
 
 CREDENTIALS_PATH = SECRETS_DIR / "credentials.json"
 TOKEN_PATH = SECRETS_DIR / "token.json"

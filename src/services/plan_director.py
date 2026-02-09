@@ -27,11 +27,19 @@ class PlanDirector:
         """
         When a new task is created (likely by MainAgent), 
         wake up the Plan Manager to analyze it.
+        
+        To prevent recursive loops, we ignore sub-tasks created by the Plan Manager.
         """
         task_data = event.payload
         task_id = task_data.get("id")
         title = task_data.get("title")
+        parent_id = task_data.get("parent_id")
         
+        # FIX: Ignore sub-tasks to prevent loops
+        if parent_id:
+            logger.debug(f"PlanDirector ignoring sub-task creation: {title} ({task_id}) with parent {parent_id}")
+            return
+
         logger.info(f"PlanDirector received TASK_CREATED: {title} ({task_id})")
         
         prompt = (
@@ -49,7 +57,20 @@ class PlanDirector:
                     # Stream content as it arrives
                     print(chunk.content)
         except Exception as e:
-            logger.error(f"Error in PlanManager execution: {e}")
+            logger.error(f"Error in PlanManager execution for task {task_id}: {e}")
+        finally:
+            # After the stream ends, verify the task's state
+            final_task_state = self.task_store.get_task(task_id)
+            if final_task_state and final_task_state.status == "in_progress":
+                logger.warning(
+                    f"Task {task_id} is still IN_PROGRESS after PlanManager stream ended. "
+                    "Agent may have crashed or reached a limit."
+                )
+                self.task_store.update_task(
+                    task_id,
+                    status="blocked",
+                    reason="Agent stopped unexpectedly after initial processing."
+                )
 
     async def handle_task_status_changed(self, event: Event):
         """

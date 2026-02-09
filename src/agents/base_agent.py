@@ -10,7 +10,7 @@ class BaseAgent:
         self.config = config or {}
         # Set default model if not in config
         self.model_id = self.config.get("model_id", "gemini-2.5-pro")
-        self.max_steps = self.config.get("max_steps", 10) # Fixed typo: max_step -> max_steps
+        self.max_steps = self.config.get("max_steps", 20) # Fixed typo: max_step -> max_steps
         self.sensitive_tool_names: Set[str] = self.config.get("sensitive_tool_names", set())
 
     def _get_project_root(self) -> Path:

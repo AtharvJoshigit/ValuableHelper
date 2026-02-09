@@ -1,8 +1,15 @@
 from enum import Enum
-from nt import O_TEMPORARY
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, Field, ConfigDict
 
+
+class AgentError(Exception):
+    """Base class for agent-related errors."""
+    pass
+
+class MaxStepsExceededError(AgentError):
+    """Raised when the agent exceeds the maximum number of steps."""
+    pass
 
 class Role(str, Enum):
     SYSTEM = "system"

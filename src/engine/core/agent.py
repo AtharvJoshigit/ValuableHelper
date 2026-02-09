@@ -3,7 +3,10 @@ import asyncio
 import uuid
 from typing import Optional, List, Any, AsyncIterator, Set
 
-from engine.core.types import Message, Role, ToolResult, StreamChunk, ToolCall
+from engine.core.types import (
+    Message, Role, ToolResult, StreamChunk, ToolCall, 
+    MaxStepsExceededError, AgentError
+)
 from engine.core.memory import Memory
 from engine.registry.tool_registry import ToolRegistry
 from engine.executors.execution_engine import ExecutionEngine
@@ -76,30 +79,27 @@ class Agent:
 
     async def run(self, input_text: str) -> str:
         # Legacy synchronous run method (kept for compatibility but not updated with HITL)
-        try:
-            self.memory.add_user_message(input_text)
-            step_count = 0
-            while step_count < self.max_steps:
-                step_count += 1
-                history = self.memory.get_history()
-                tools = self.registry.get_all_tools()
-                response = await self.provider.generate(history, tools)
-                
-                self.memory.add_message(Message(
-                    role=Role.ASSISTANT,
-                    content=response.content,
-                    tool_calls=response.tool_calls
-                ))
+        self.memory.add_user_message(input_text)
+        step_count = 0
+        while step_count < self.max_steps:
+            step_count += 1
+            history = self.memory.get_history()
+            tools = self.registry.get_all_tools()
+            response = await self.provider.generate(history, tools)
+            
+            self.memory.add_message(Message(
+                role=Role.ASSISTANT,
+                content=response.content,
+                tool_calls=response.tool_calls
+            ))
 
-                if not response.tool_calls:
-                    return response.content or ""
-                
-                tool_results = await self.execution_engine.execute_tool_calls(response.tool_calls)
-                self.memory.add_message(Message(role=Role.TOOL, tool_results=tool_results))
+            if not response.tool_calls:
+                return response.content or ""
+            
+            tool_results = await self.execution_engine.execute_tool_calls(response.tool_calls)
+            self.memory.add_message(Message(role=Role.TOOL, tool_results=tool_results))
 
-            return "Max steps reached without final answer."
-        except Exception as e: 
-            return f"Encountered error: {e}"
+        raise MaxStepsExceededError(f"Max steps ({self.max_steps}) reached without final answer.")
 
     async def stream(self, input_text: str) -> AsyncIterator[StreamChunk]:
         try:
@@ -178,7 +178,13 @@ class Agent:
                 async for chunk in self._execute_and_stream_tools(tool_calls):
                     yield chunk
 
-            yield StreamChunk(content="\nMax steps reached without final answer.")
-        except Exception as e: 
+            yield StreamChunk(content="\n\nMax steps reached without final answer.")
+            raise MaxStepsExceededError(f"Max steps ({self.max_steps}) reached without final answer.")
+        except AgentError as e:
             logger.error(f"Agent Error: {e}")
-            yield StreamChunk(content=f'\\n Encountered Error : {e}')
+            yield StreamChunk(content=f"\n\n❌ {str(e)}")
+            raise
+        except Exception as e: 
+            logger.error(f"Unexpected Agent Error: {e}")
+            yield StreamChunk(content=f'\n\n❌ Encountered Error: {e}')
+            raise AgentError(str(e)) from e

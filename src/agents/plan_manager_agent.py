@@ -1,9 +1,11 @@
+from engine.providers.base_provider import BaseProvider
+from engine.providers.google.provider import GoogleProvider
 from engine.registry.library.filesystem_tools import ListDirectoryTool, ReadFileTool
 from .base_agent import BaseAgent
 from .coder_agent import CoderAgent
 from .system_operator_agent import SystemOperatorAgent
 from engine.registry.agent_wrapper import AgentWrapper
-from tools.task_store_tool import AddTaskDependencyTool, AddTaskTool, ListTasksTool, RemoveTaskDependencyTool, UpdateTaskStatusTool
+from tools.task_store_tool import AddTaskDependencyTool, AddTaskTool, DeleteTaskTool, GetTaskTool, ListSubtasksTool, ListTasksTool, RemoveTaskDependencyTool, UpdateTaskStatusTool, UpdateTaskTool
 from services.task_store import TaskStore
 from engine.registry.tool_registry import ToolRegistry
 
@@ -12,6 +14,10 @@ class PlanManagerAgent(BaseAgent):
         super().__init__(config)
         self.task_store = task_store
 
+    def _get_provider(self) -> BaseProvider:
+        # Using a high-performance model for coding tasks
+        return GoogleProvider(model_id="gemini-2.5-preview")
+        
     def _get_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
         
@@ -24,6 +30,11 @@ class PlanManagerAgent(BaseAgent):
         registry.register(ListTasksTool(self.task_store))
         registry.register(AddTaskDependencyTool(self.task_store))
         registry.register(RemoveTaskDependencyTool(self.task_store))
+        registry.register(UpdateTaskTool(self.task_store))
+        registry.register(DeleteTaskTool(self.task_store))
+        registry.register(ListSubtasksTool(self.task_store))
+        registry.register(GetTaskTool(self.task_store))
+
         
         # 2. The Hands: System Operator
         operator_agent = SystemOperatorAgent().start()
