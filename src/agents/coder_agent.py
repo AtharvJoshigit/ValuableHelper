@@ -1,3 +1,4 @@
+from agents.agent_id import AGENT_ID
 from engine.providers.base_provider import BaseProvider
 from engine.providers.google.provider import GoogleProvider
 from engine.registry.tool_registry import ToolRegistry
@@ -11,10 +12,19 @@ class CoderAgent(BaseAgent):
     """
     A specialized agent for writing high-quality, efficient, and well-documented code.
     """
-    def _get_provider(self) -> BaseProvider:
-        # Using a high-performance model for coding tasks
-        return GoogleProvider(model_id="gemini-3-flash-preview")
-        
+    
+    def __init__(self, config: dict = None):
+        default_config = {
+            "model_id": "gemini-2.5-pro",
+            "provider": "google",
+            "max_steps": 25,
+            "temperature": 0.3,
+            "sensitive_tool_names": {}
+        }
+        if config:
+            default_config.update(config)
+        super().__init__(default_config)
+    
     def _get_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
         
@@ -26,15 +36,19 @@ class CoderAgent(BaseAgent):
         registry.register(RunCommandTool()) # Added for running tests/checks
         
         # Integration with System Operator for more complex tasks
-        operator_agent = SystemOperatorAgent().start()
-        registry.register(AgentWrapper(
-            agent=operator_agent,
-            name="system_operator",
-            description="Delegate complex file operations, directory structure creation, or multi-step shell commands to this specialist."
-        ))
+        # operator_agent = SystemOperatorAgent().start()
+        # registry.register(AgentWrapper(
+        #     agent=operator_agent,
+        #     name="system_operator",
+        #     description="Delegate complex file operations, directory structure creation, or multi-step shell commands to this specialist."
+        # ))
 
         return registry
 
     def start(self):
         """Initializes the agent with its specialized system prompt."""
-        return self.create(system_prompt_file=["my_agents/coder_agent.md", "tools_call.md"])
+        return self.create(
+            system_prompt_file=["my_agents/coder_agent.md", "tools_call.md"],
+            agent_id=AGENT_ID.FIXED_CODER_AGENT.value,
+            set_as_current=False
+        )

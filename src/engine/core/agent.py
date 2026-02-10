@@ -1,16 +1,19 @@
+# file: engine/core/agent.py (updated)
+
 import logging
 import asyncio
 import uuid
 from typing import Optional, List, Any, AsyncIterator, Set
 
+from engine.core.provide import get_provider
 from engine.core.types import (
-    Message, Role, ToolResult, StreamChunk, ToolCall, 
+    Message, Role, ToolResult, StreamChunk, ToolCall,
     MaxStepsExceededError, AgentError
 )
 from engine.core.memory import Memory
 from engine.registry.tool_registry import ToolRegistry
 from engine.executors.execution_engine import ExecutionEngine
-from engine.providers.base_provider import BaseProvider
+from engine.core.agent_instance_manager import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -22,36 +25,41 @@ class Agent:
 
     def __init__(
         self,
-        provider: BaseProvider,
+        config: AgentConfig,
         registry: ToolRegistry,
-        system_prompt: Optional[str] = None,
-        memory: Optional[Memory] = None,
-        max_steps: int = 10,
-        sensitive_tool_names: Set[str] = set()
+        memory: Optional[Memory] = None
     ):
-        self.provider = provider
+        self.config = config
+        self.provider = get_provider(
+            config.provider,
+            model=config.model,
+            temperature=config.temperature,
+            top_p=config.top_p,
+            top_k=config.top_k,
+            max_tokens=config.max_tokens,
+            **config.additional_params
+        )
+        
+        if self.provider is None:
+            raise ValueError(f"Failed to initialize provider: {config.provider}")
+        
         self.registry = registry
-        self.system_prompt = system_prompt
+        self.system_prompt = config.system_prompt
         self.memory = memory or Memory()
         self.execution_engine = ExecutionEngine(registry)
-        self.max_steps = max_steps
-        self.sensitive_tool_names = sensitive_tool_names
+        self.max_steps = config.max_steps
+        self.sensitive_tool_names = config.sensitive_tool_names
         self.pending_tool_calls: Optional[List[ToolCall]] = None
 
-        # Initialize memory with system prompt if provided and empty
         if self.system_prompt and not self.memory.get_history():
             self.memory.add_message(Message(role=Role.SYSTEM, content=self.system_prompt))
 
     def _is_sensitive(self, tool_call: ToolCall) -> bool:
-        """
-        Check if a tool call involves sensitive operations requiring approval.
-        """
+        """Check if a tool call involves sensitive operations requiring approval."""
         return tool_call.name in self.sensitive_tool_names
 
     async def _execute_and_stream_tools(self, tool_calls: List[ToolCall]) -> AsyncIterator[StreamChunk]:
-        """
-        Execute a list of tool calls and stream the results.
-        """
+        """Execute a list of tool calls and stream the results."""
         task_to_info = {}
         for i, call in enumerate(tool_calls):
             task = asyncio.create_task(
@@ -64,7 +72,7 @@ class Agent:
         
         while pending:
             done, pending = await asyncio.wait(
-                pending, 
+                pending,
                 return_when=asyncio.FIRST_COMPLETED
             )
             
@@ -78,7 +86,6 @@ class Agent:
         self.memory.add_message(Message(role=Role.TOOL, tool_results=tool_results))
 
     async def run(self, input_text: str) -> str:
-        # Legacy synchronous run method (kept for compatibility but not updated with HITL)
         self.memory.add_user_message(input_text)
         step_count = 0
         while step_count < self.max_steps:
@@ -103,19 +110,15 @@ class Agent:
 
     async def stream(self, input_text: str) -> AsyncIterator[StreamChunk]:
         try:
-            # 1. Handle Pending HITL Requests (Resumption)
             if self.pending_tool_calls:
-                # Check if user approved
                 is_approved = input_text.strip().lower() in ["yes", "y", "approve", "confirm"]
                 
                 if is_approved:
                     yield StreamChunk(content="✅ Permission granted. Resuming execution...\n")
-                    # Execute pending tools
                     async for chunk in self._execute_and_stream_tools(self.pending_tool_calls):
                         yield chunk
                 else:
                     yield StreamChunk(content="❌ Permission denied. Cancelling tool execution.\n")
-                    # Generate error results for pending tools
                     tool_results = []
                     for call in self.pending_tool_calls:
                         tool_results.append(ToolResult(
@@ -126,18 +129,14 @@ class Agent:
                         ))
                     self.memory.add_message(Message(role=Role.TOOL, tool_results=tool_results))
                 
-                # Clear pending state
                 self.pending_tool_calls = None
                 
             else:
-                # Normal flow: Add user message
                 self.memory.add_user_message(input_text)
 
             step_count = 0
             while step_count < self.max_steps:
                 step_count += 1
-                
-                # Separator removed as requested
                 
                 history = self.memory.get_history()
                 tools = self.registry.get_all_tools()
@@ -149,10 +148,9 @@ class Agent:
                     if chunk.content:
                         full_content += chunk.content
                     if chunk.tool_call:
-                        # Robustness: Ensure ID exists
                         if not chunk.tool_call.id:
                             chunk.tool_call.id = f"call_{uuid.uuid4().hex[:8]}"
-                        tool_calls.append(chunk.tool_call)  
+                        tool_calls.append(chunk.tool_call)
                     yield chunk
 
                 assistant_msg = Message(
@@ -163,18 +161,14 @@ class Agent:
                 self.memory.add_message(assistant_msg)
         
                 if not tool_calls:
-                    yield StreamChunk(content="\n\n-----------\n")
                     return
                 
-                # 2. Check for Sensitive Tools (HITL)
                 sensitive_calls = [c for c in tool_calls if self._is_sensitive(c)]
                 if sensitive_calls:
                     self.pending_tool_calls = tool_calls
-                    # Yield permission request chunk instead of text warning
                     yield StreamChunk(permission_request=sensitive_calls)
-                    return # Exit stream to wait for user input
+                    return
 
-                # 3. Execute Tools (if no permission needed)
                 async for chunk in self._execute_and_stream_tools(tool_calls):
                     yield chunk
 
@@ -184,7 +178,7 @@ class Agent:
             logger.error(f"Agent Error: {e}")
             yield StreamChunk(content=f"\n\n❌ {str(e)}")
             raise
-        except Exception as e: 
+        except Exception as e:
             logger.error(f"Unexpected Agent Error: {e}")
             yield StreamChunk(content=f'\n\n❌ Encountered Error: {e}')
             raise AgentError(str(e)) from e

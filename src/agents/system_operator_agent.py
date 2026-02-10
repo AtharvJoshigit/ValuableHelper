@@ -1,3 +1,4 @@
+from agents.agent_id import AGENT_ID
 from pydantic import config
 from engine.providers.base_provider import BaseProvider
 from engine.providers.google.provider import GoogleProvider
@@ -11,6 +12,18 @@ class SystemOperatorAgent(BaseAgent):
     """
     A specialized agent for system operations, file management, and command execution.
     """
+    def __init__(self, config: dict = None):
+        default_config = {
+            "model_id": "gemini-2.5-flash",
+            "provider": "google",
+            "max_steps": 25,
+            "temperature": 0.3,
+            "sensitive_tool_names": {}
+        }
+        if config:
+            default_config.update(config)
+        super().__init__(default_config)
+    
     def _get_provider(self) -> BaseProvider:
         return GoogleProvider(model_id="gemini-2.5-flash")
         
@@ -32,4 +45,6 @@ class SystemOperatorAgent(BaseAgent):
 
     def start(self):
         """Initializes the agent with its specialized system prompt."""
-        return self.create(system_prompt_file=["my_agents/system_operator_agent.md", "tools_call.md"])
+        return self.create(
+            system_prompt_file=["my_agents/system_operator_agent.md", "tools_call.md"],
+            agent_id=AGENT_ID.FIXED_SYSTEM_AGENT.value)

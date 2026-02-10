@@ -2,7 +2,7 @@
 from enum import Enum
 
 
-class GeminiModel(str, Enum):
+class LLModel(str, Enum):
     # --- Gemini 3 (Latest / Experimental) ---
     GEMINI_3_PRO_PREVIEW = "gemini-3-pro-preview"
     GEMINI_3_FLASH_PREVIEW = "gemini-3-flash-preview"

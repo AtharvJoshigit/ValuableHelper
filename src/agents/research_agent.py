@@ -1,16 +1,36 @@
-from .base_agent import BaseAgent
-from src.tools.web_search_tool import WebSearchTool
-from engine.registry.library.filesystem_tools import ReadFileTool, CreateFileTool, ListDirectoryTool
+# file: engine/agents/research_agent.py
+
+from agents.agent_id import AGENT_ID
+from agents.base_agent import BaseAgent
 from engine.registry.tool_registry import ToolRegistry
+from tools.web_search_tool import WebSearchTool
+
 
 class ResearchAgent(BaseAgent):
+    """
+    Specialized agent for research tasks with web search capabilities.
+    """
+    
+    def __init__(self, config: dict = None):
+        default_config = {
+            "model_id": "gemini-2.5-pro",
+            "provider": "google",
+            "max_steps": 20,
+            "temperature": 0.7
+        }
+        if config:
+            default_config.update(config)
+        super().__init__(default_config)
+    
     def _get_registry(self) -> ToolRegistry:
+        """Register research-specific tools."""
         registry = ToolRegistry()
         registry.register(WebSearchTool())
-        registry.register(ReadFileTool())
-        registry.register(CreateFileTool())
-        registry.register(ListDirectoryTool())
         return registry
-
+    
     def start(self):
-        return self.create(system_prompt_file=["my_agents/research_agent.md", "tools_call.md"])
+        return self.create(
+            system_prompt_file=["my_agents/research_agent.md"],
+            agent_id=AGENT_ID.FIXED_RESEARCH_AGENT.value,
+            set_as_current=False
+        )

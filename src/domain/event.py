@@ -15,6 +15,8 @@ class EventType(str, Enum):
     PLAN_UPDATED = "plan_updated"
     SYSTEM_STARTUP = "system_startup"
     SYSTEM_SHUTDOWN = "system_shutdown"
+    USER_MESSAGE = "user_message"
+    USER_APPROVAL = "user_approval"
 
 class Event(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
