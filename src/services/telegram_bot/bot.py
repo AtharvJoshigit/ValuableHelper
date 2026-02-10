@@ -21,6 +21,10 @@ from engine.core.types import StreamChunk, ToolResult
 from agents.base_agent import BaseAgent
 from services.plan_director import PlanDirector
 
+# Imports for authorization
+from functools import wraps
+from services.telegram_bot.config import AUTHORIZED_USERS
+
 # Configure Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -35,7 +39,17 @@ last_active_chat_id: Optional[int] = None
 _application = None
 _task_store = Singleton.get_task_store()
 
-
+# Authorization decorator
+def authorized_only(func):
+    @wraps(func)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = update.effective_user.id
+        if user_id not in AUTHORIZED_USERS:
+            logger.warning(f"Unauthorized access attempt by user_id={user_id}")
+            await update.message.reply_text("🚫 You are not authorized to use this bot.")
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapped
 
 def get_or_create_agent(chat_id: int):
     if chat_id not in user_sessions:
@@ -179,38 +193,34 @@ def format_response(chunks: List[StreamChunk], status_override: str = None) -> s
 
     return f"{header}\n\n{log_section}{text_body}"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hi! I'm your engineering partner. Let's get to work.")
-
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id in user_sessions:
-        del user_sessions[chat_id]
-    await update.message.reply_text("Memory wiped. Starting fresh.")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_active_chat_id
-    chat_id = update.effective_chat.id
-    last_active_chat_id = chat_id
-    
-    text = update.message.text
-    
+async def run_agent_loop(chat_id: int, user_input: str, context: ContextTypes.DEFAULT_TYPE, status_msg=None, retain_history: bool = False):
+    """
+    Common logic to run the agent stream, update Telegram UI, and handle HITL.
+    """
     if chat_id not in user_locks:
         user_locks[chat_id] = asyncio.Lock()
         
     async with user_locks[chat_id]:
         agent = get_or_create_agent(chat_id)
         
-        await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
+        # Initialize or retrieve chunk history to persist logs across pauses
+        if not retain_history:
+             context.user_data['chunks'] = []
         
-        # Initial status message
-        status_msg = await update.message.reply_text("🤖 <b>Thinking...</b>", parse_mode=constants.ParseMode.HTML)
+        received_chunks = context.user_data.setdefault('chunks', [])
+
+        # Send initial status if needed
+        if status_msg is None:
+             status_msg = await context.bot.send_message(
+                 chat_id=chat_id, 
+                 text="🤖 <b>Thinking...</b>", 
+                 parse_mode=constants.ParseMode.HTML
+             )
         
-        received_chunks = []
         last_update_time = 0
         
         try:
-            async for chunk in agent.stream(text):
+            async for chunk in agent.stream(user_input):
                 received_chunks.append(chunk)
                 
                 # Activity Logging to Console
@@ -223,10 +233,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if chunk.permission_request:
                     tool_names = ", ".join([t.name for t in chunk.permission_request])
                     current_view = format_response(received_chunks, status_override="⚠️ <b>Permission Required</b>")
+                    
                     keyboard = [
                         [
-                            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{chat_id}"),
-                            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_{chat_id}")
+                            InlineKeyboardButton("✅ Approve", callback_data="approve"),
+                            InlineKeyboardButton("❌ Cancel", callback_data="cancel")
                         ]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -258,12 +269,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception as e:
             logger.error(f"Error in stream: {e}", exc_info=True)
-            logger.error(f"Error in stream: {e}", exc_info=True)
-        
-            # ✅ More helpful error message
-            error_msg = "❌ <b>Oops, hit a snag!</b>\n\n"
             
             # Categorize error type
+            error_msg = "❌ <b>Oops, hit a snag!</b>\n\n"
             if "timeout" in str(e).lower():
                 error_msg += "Took too long. Try breaking this into smaller steps?"
             elif "permission" in str(e).lower():
@@ -274,9 +282,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_msg += f"Error: {html.escape(str(e)[:100])}"
             
             error_msg += "\n\n💡 Try rephrasing or use /reset if things are stuck."
+            
+            await status_msg.edit_text(error_msg, parse_mode=constants.ParseMode.HTML)
 
-            await status_msg.edit_text(f"❌ <b>Critical Error:</b> {str(e)}", parse_mode=constants.ParseMode.HTML)
 
+@authorized_only
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hi! I'm your engineering partner. Let's get to work.")
+
+@authorized_only
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id in user_sessions:
+        del user_sessions[chat_id]
+    
+    # Also clear history
+    if 'chunks' in context.user_data:
+        del context.user_data['chunks']
+        
+    await update.message.reply_text("Memory wiped. Starting fresh.")
+
+@authorized_only
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global last_active_chat_id
+    chat_id = update.effective_chat.id
+    last_active_chat_id = chat_id
+    
+    text = update.message.text
+    
+    await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
+    
+    # Delegate to agent loop, resetting history for new message
+    await run_agent_loop(chat_id, text, context, retain_history=False)
+
+@authorized_only
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows session statistics."""
     chat_id = update.effective_chat.id
@@ -287,7 +326,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     agent = get_or_create_agent(chat_id)
     
-    # Get stats from agent (you'll need to implement tracking)
+    # Get stats from agent
     stats_text = f"""
 📊 <b>Session Stats</b>
 
@@ -300,6 +339,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(stats_text, parse_mode=constants.ParseMode.HTML)
 
 
+@authorized_only
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles inline button clicks for approvals."""
     query = update.callback_query
@@ -309,32 +349,70 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
     if data.startswith("approve_"):
-        agent = get_or_create_agent(chat_id)
-        # Resume agent with approval
-        # You'll need to implement this in your agent
+        # Legacy Chat Approval
+        if ":" not in data:
+            agent = get_or_create_agent(chat_id)
+            await query.edit_message_text(
+                text="✅ <b>Approved!</b> Continuing execution...",
+                parse_mode=constants.ParseMode.HTML
+            )
+            return
+
+        # Task Approval
+        # Format: approve_task:{task_id}
+        action, task_id = data.split(":")
+        
+        if action == "approve_task":
+            # Get current context to preserve other fields if needed, 
+            # but update_task merges top-level fields. 
+            # We need to merge 'context' dict ideally, but TaskStore.update_task replaces it?
+            # Let's check TaskStore. It sets the field. 
+            # So we should probably read, update dict, write.
+            # For now, simplistic approach:
+            
+            task = _task_store.get_task(task_id)
+            if task:
+                new_context = task.context or {}
+                new_context["approved_tools"] = ["all"]
+                
+                await _task_store.update_task(task_id, {
+                    "status": "todo",
+                    "context": new_context
+                })
+                await query.edit_message_text(
+                    text=f"✅ <b>Approved Task</b>\nID: {task_id}\nQueued for execution.",
+                    parse_mode=constants.ParseMode.HTML
+                )
+            else:
+                await query.edit_message_text("❌ Task not found.")
+
+    elif data.startswith("deny_task:"):
+        _, task_id = data.split(":")
+        await _task_store.update_task(task_id, {
+            "status": "blocked",
+            "context": {"blocked_reason": "User denied permission via Telegram"}
+        })
         await query.edit_message_text(
-            text="✅ <b>Approved!</b> Continuing execution...",
+            text=f"🚫 <b>Denied Task</b>\nID: {task_id}\nMarked as blocked.",
             parse_mode=constants.ParseMode.HTML
         )
-        # Trigger agent continuation here
         
     elif data.startswith("cancel_"):
+        # Legacy Chat Cancel
         agent = get_or_create_agent(chat_id)
-        # Cancel the pending operation
         await query.edit_message_text(
             text="❌ <b>Cancelled</b>",
             parse_mode=constants.ParseMode.HTML
         )
 
+
+@authorized_only
 async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows current task status in a clean format."""
     chat_id = update.effective_chat.id
-    agent = get_or_create_agent(chat_id)
     
-    # Get tasks from agent (you'll need to expose this)
-    # Assuming agent has access to task manager
+    # Using global task store
     try:
-        # This is pseudocode - adapt to your actual task retrieval
         pending_tasks = _task_store.list_tasks(status=["todo", "in_progress", "blocked", "waiting_approval"])
         
         if not pending_tasks:

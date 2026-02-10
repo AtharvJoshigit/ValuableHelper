@@ -8,6 +8,8 @@ from src.infrastructure.event_bus import EventBus
 from src.domain.event import EventType, Event
 from src.infrastructure.singleton import Singleton
 from src.agents.plan_manager_agent import PlanManagerAgent
+from src.agents.coder_agent import CoderAgent
+from src.agents.research_agent import ResearchAgent
 from src.services.priority_queue import PriorityQueue
 from src.services.notification_service import notification_service
 
@@ -48,9 +50,6 @@ class PlanDirector:
         self.priority_queue = PriorityQueue(self.task_store)
         self._started = False
         self._start_lock = asyncio.Lock()    
-        
-        # Initialize the PlanManager agent
-        self.agent = PlanManagerAgent(self.task_store).start()
         
         # Track tasks currently being processed
         self.processing_tasks: Dict[str, Dict[str, Any]] = {}
@@ -129,19 +128,54 @@ class PlanDirector:
         }
         
         prompt = (
-            f"Task: '{task.title}' (ID: {task_id})\n"
-            f"Description: {task.description or 'None'}\n"
-            f"Status: {task.status}\n\n"
+            f"Task: '{task.title}' (ID: {task_id})\\n"
+            f"Description: {task.description or 'None'}\\n"
+            f"Status: {task.status}\\n\\n"
             "Analyze and act. Move task out of 'todo' to 'in_progress', 'waiting_approval', or 'blocked'."
         )
         
         try:
-            async for chunk in self.agent.stream(prompt):
+            # Create a fresh agent instance based on assignment
+            if task.assigned_to == 'coder_agent':
+                agent = CoderAgent().start()
+            elif task.assigned_to == 'research_agent':
+                agent = ResearchAgent().start()
+            else:
+                # Default to PlanManager for orchestration
+                agent = PlanManagerAgent(self.task_store).start()
+
+            logger.info(f"Task {task_id} assigned to {agent.__class__.__name__}")
+
+            async for chunk in agent.stream(prompt):\
+                # Check for permission requests
+                if hasattr(chunk, 'permission_request') and chunk.permission_request:
+                    tool_names = []
+                    for req in chunk.permission_request:
+                        if isinstance(req, dict):
+                            tool_names.append(req.get('name', 'unknown'))
+                        elif hasattr(req, 'name'):
+                            tool_names.append(req.name)
+                        else:
+                            tool_names.append(str(req))
+                    
+                    logger.info(f"Task {task.id} requesting permission for: {tool_names}")
+                    
+                    await self.task_store.update_task(
+                        task_id, 
+                        updates={
+                            "status": TaskStatus.WAITING_APPROVAL,
+                            "context": {"pending_permissions": tool_names}
+                        }
+                    )
+                    
+                    await notification_service.send_approval_request(task_id, task.title, tool_names)
+                    break
+
                 if hasattr(chunk, 'content') and chunk.content:
                     if task_id in self.processing_tasks:
                         self.processing_tasks[task_id]['last_activity'] = time.time()
                 
-                if hasattr(chunk, 'type') and chunk.type == 'tool_use':
+                if hasattr(chunk, 'tool_call') and chunk.tool_call:
                     if task_id in self.processing_tasks:
                         self.processing_tasks[task_id]['tool_calls'] += 1
         except Exception as e:
@@ -154,19 +188,11 @@ class PlanDirector:
 
     async def _verify_and_cleanup_task(self, task_id: str):
         task = self.task_store.get_task(task_id)
-        if not task: return
-
-        # Check 1: Orphaned TODO
-        if task.status == TaskStatus.TODO and not task.dependencies:
-            msg = f"🚨 **Safety Net**: Paused '{task.title}'. Left in TODO without dependencies."
-            notification_service.send_custom_notification(msg)
-            await self.task_store.update_task(task_id, updates={
-                "status": TaskStatus.PAUSED,
-                "context": {"pause_reason": "Orphaned TODO state"}
-            })
+        if not task: 
+            return
 
         # Check 2: IN_PROGRESS validation
-        elif task.status == TaskStatus.IN_PROGRESS:
+        if task.status == TaskStatus.IN_PROGRESS:
             subtasks = self.task_store.get_subtasks(task_id)
             if not subtasks:
                 if not task.assigned_to:
@@ -197,7 +223,7 @@ class PlanDirector:
             "context": {"blocked_reason": reason, **(details or {})}
         })
         
-        msg = f"❌ **Task Failure**: '{task.title}'\nReason: {reason}"
+        msg = f"❌ **Task Failure**: '{task.title}'\\nReason: {reason}"
         notification_service.send_custom_notification(msg)
 
     async def _watchdog_loop(self):

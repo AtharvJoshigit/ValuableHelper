@@ -21,7 +21,11 @@ dependencies = [
     "google-genai>=1.2.0",
     "google-auth-oauthlib>=1.0.0",
     "rich>=1.0.0",
-    "questionary"
+    "questionary",
+    "duckduckgo-search",
+    "google-api-python-client>=2.0.0",
+    "google-auth-httplib2",
+    "google-auth-oauthlib",
 ]
 
 [project.optional-dependencies]

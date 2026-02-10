@@ -10,13 +10,14 @@ from services.task_store import TaskStore
 from engine.registry.tool_registry import ToolRegistry
 
 class PlanManagerAgent(BaseAgent):
-    def __init__(self, task_store: TaskStore, config: dict = None):
+    def __init__(self, task_store: TaskStore, config: dict = {}):
         super().__init__(config)
         self.task_store = task_store
+        self.max_steps = config.get('max_steps', 20)
 
     def _get_provider(self) -> BaseProvider:
         # Using a high-performance model for coding tasks
-        return GoogleProvider(model_id="gemini-2.5-pro")
+        return GoogleProvider(model_id="gemini-3-flash-preview")
         
     def _get_registry(self) -> ToolRegistry:
         registry = ToolRegistry()

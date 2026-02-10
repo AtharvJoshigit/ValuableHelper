@@ -1,13 +1,18 @@
 
 import asyncio
 from threading import Lock
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from src.domain.event import Event, EventType
 from src.infrastructure.event_bus import EventBus
 from src.domain.task import Task
 from src.services.telegram_bot.config import ADMIN_USER_IDS
-
+# Import telegram types locally inside methods to avoid circular imports if needed, 
+# or ensure bot is initialized. 
+# But notification_service is usually imported by bot.py, so we might have a cycle if we import InlineKeyboard at top level?
+# Actually bot.py imports notification_service. notification_service doesn't import bot. 
+# It just holds a reference to 'app'.
+# We can import InlineKeyboardButton inside the method.
 
 class NotificationService:
     _instance: Optional["NotificationService"] = None
@@ -31,8 +36,6 @@ class NotificationService:
         """Sets the Telegram application instance."""
         self._application = app
     
-    
-    
     def _subscribe_to_events(self) -> None:
         """Subscribes to relevant task-related events."""
         self._publisher.subscribe(EventType.TASK_STATUS_CHANGED, self._handle_task_status_change)
@@ -40,7 +43,7 @@ class NotificationService:
         self._publisher.subscribe(EventType.TASK_FAILED, self._handle_task_failed)
         self._publisher.subscribe(EventType.TASK_COMPLETED, self._handle_task_completed)
 
-    async def _send_message_to_admins(self, message: str) -> None:
+    async def _send_message_to_admins(self, message: str, reply_markup=None) -> None:
         """Sends a message to all configured admin user IDs."""
         app = self._application
         if not app:
@@ -53,41 +56,71 @@ class NotificationService:
 
         for user_id in ADMIN_USER_IDS:
             try:
-                await app.bot.send_message(chat_id=user_id, text=message)
+                await app.bot.send_message(
+                    chat_id=user_id, 
+                    text=message,
+                    reply_markup=reply_markup,
+                    parse_mode="HTML"
+                )
             except Exception as e:
                 print(f"Error sending notification to {user_id}: {e}")
 
     async def _handle_task_status_change(self, event: Event) -> None:
         payload = event.payload
-        task_id = payload.get('description') or payload.get('title', 'N/A') 
+        task_id = payload.get('task_id', 'N/A')
         new_status = payload.get('new_status')
-        message = f"🔄 Task status changed for task {task_id}: {event.type}"
+        # We can add a lookup for title if we want, but ID is safer for now.
+        message = f"🔄 <b>Task Status Update</b>\nID: <code>{task_id}</code>\nStatus: {new_status}"
         await self._send_message_to_admins(message)
 
     async def _handle_task_created(self, event: Event) -> None:
         payload = event.payload
-        description = payload.get('description') or payload.get('title', 'N/A')
-        message = f"🆕 New task created: '{description}'"
+        title = payload.get('title', 'N/A')
+        message = f"🆕 <b>New Task</b>\n{title}"
         await self._send_message_to_admins(message)
 
     async def _handle_task_failed(self, event: Event) -> None:
         payload = event.payload
-        description = payload.get('description') or payload.get('title', 'N/A')
-        message = f"❌ Task failed: '{description}'"
-        result = payload.get('result')
+        title = payload.get('title', 'N/A')
+        message = f"❌ <b>Task Failed</b>\n{title}"
+        result = payload.get('result_summary')
         if result:
              message += f"\nReason: {result}"
         await self._send_message_to_admins(message)
 
     async def _handle_task_completed(self, event: Event) -> None:
         payload = event.payload
-        description = payload.get('description') or payload.get('title', 'N/A')
-        message = f"✅ Task completed: '{description}'"
+        title = payload.get('title', 'N/A')
+        message = f"✅ <b>Task Completed</b>\n{title}"
         await self._send_message_to_admins(message)
 
     async def send_custom_notification(self, message: str) -> None:
         """Sends a custom message to all admins."""
         await self._send_message_to_admins(message)
+
+    async def send_approval_request(self, task_id: str, title: str, tools: List[str]) -> None:
+        """Sends a message with Approve/Deny buttons to admins."""
+        if not self._application: return
+        
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        tools_str = ", ".join(tools)
+        text = (
+            f"⚠️ <b>Approval Needed</b>\n"
+            f"Task: {title}\n"
+            f"Action: Agent wants to use <b>{tools_str}</b>.\n\n"
+            f"Allow this?"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve_task:{task_id}"),
+                InlineKeyboardButton("❌ Deny", callback_data=f"deny_task:{task_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await self._send_message_to_admins(text, reply_markup=reply_markup)
 
 # Singleton instance
 notification_service = NotificationService()

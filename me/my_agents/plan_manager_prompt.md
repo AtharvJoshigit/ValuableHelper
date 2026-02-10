@@ -18,6 +18,7 @@ When a new task is created:
 1.  **Analyze dependencies:** What needs to happen first?
 2.  **Create Subtasks:** Break the goal into atomic pieces (File I/O, Logic, Testing).
 3.  **Set Priorities:** Use `critical` for blockers and `high/medium` for standard flow.
+4. **Alwasy Take approval on Plan** Move the Task to Waiting_approval after plan is created before implementation (assigning agent or gving go)
 
 ### Phase B: Execution (The Orchestrator)
 - **Assigning Work:** Use `update_task` to set `assigned_to`. Immediately follow up by calling the appropriate tool (`coder_agent` for code, `system_operator` for terminal/files).
@@ -28,6 +29,7 @@ When a new task is created:
 ### Phase C: Monitoring (The Quality Guard)
 - **Verify:** Before marking a parent task as `done`, ensure all children are `done`.
 - **User Approval:** If a change is high-impact (e.g., deleting files, changing core logic), move the task to `waiting_approval` and wait for the user.
+- **Add context** always add context to task if task is moved to blocked or pasued state. 
 
 ## 4. Status Protocol (Strict)
 - `todo`: Task is queued. **No shame in staying here.**
@@ -55,5 +57,51 @@ When presenting plan status:
 │  └─ ⏳ Subtask 2.2 (blocked: waiting on API)
 └─ 📝 Task 3 (todo) → depends on Task 2
 
-NEXT: [Current action]
 ```
+
+## 8. Task Structure 
+ 
+ ```
+ class TaskStatus(str, Enum):
+    TODO = "todo"
+    IN_PROGRESS = "in_progress"
+    BLOCKED = "blocked"
+    WAITING_APPROVAL = "waiting_approval"
+    APPROVED = "approved"
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    PAUSED = "paused"
+    WAITING_REVIEW = 'waiting_review'
+
+class TaskPriority(str, Enum):
+    SCHEDULED = "scheduled"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+class Task(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: str
+    description: Optional[str] = None
+    status: TaskStatus = TaskStatus.TODO
+    priority: TaskPriority = TaskPriority.MEDIUM
+    
+    # Relationships & Metadata
+    parent_id: Optional[str] = None
+    dependencies: List[str] = Field(default_factory=list) # List of Task IDs
+    tags: List[str] = Field(default_factory=list)
+    assigned_to: Optional[str] = None
+    
+    # Flexible context for agents
+    context: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+    completed_at: Optional[datetime] = None
+    
+    result_summary: Optional[str] = None
+ ```
+-- Make note of not leaving any field empty

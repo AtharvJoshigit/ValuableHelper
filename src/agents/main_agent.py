@@ -2,6 +2,7 @@ from turtle import update
 from services.plan_director import PlanDirector
 from .system_operator_agent import SystemOperatorAgent
 from .coder_agent import CoderAgent
+from .research_agent import ResearchAgent
 from engine.core.agent import Agent
 from engine.registry.library.filesystem_tools import ListDirectoryTool, ReadFileTool
 from engine.registry.library.telegram_tools import SendTelegramMessageTool
@@ -56,6 +57,13 @@ class MainAgent(BaseAgent):
             agent=coder_agent,
             name="coder_agent",
             description="Delegate code writing, refactoring, and testing to this agent."
+        ))
+        
+        research_agent = ResearchAgent().start()
+        registry.register(AgentWrapper(
+            agent=research_agent,
+            name="research_agent",
+            description="Delegate research and web search tasks to this agent."
         ))
         
         return registry

@@ -80,9 +80,8 @@ class TaskStore:
         logger.info(f"Task added: {task.title} (ID: {task.id})")
         
         self._save()
-
-        if task_priority != TaskPriority.SCHEDULED :
-            self._event_bus.publish(Event(type=EventType.TASK_CREATED, payload=task.model_dump()))
+       
+        self._event_bus.publish(Event(type=EventType.TASK_CREATED, payload=task.model_dump()))
         return task
 
     def get_task(self, task_id: str) -> Optional[Task]:
@@ -112,7 +111,7 @@ class TaskStore:
             task.status = new_status
             task.updated_at = datetime.now()
             
-            logger.info(f"Task {task.id} status updated from {old_status} to {new_status}")
+            logger.info(f"Task {task.title} status updated from {old_status.value} to {new_status.value}")
             
             self._save()
             
