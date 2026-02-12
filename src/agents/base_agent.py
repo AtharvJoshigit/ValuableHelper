@@ -1,11 +1,13 @@
-# file: engine/core/base_agent.py
+# file: src/agents/base_agent.py
 
 from pathlib import Path
-from typing import Optional, Set, Union, List
+from typing import Optional, Set, Union, List, AsyncIterator
 from engine.core.agent import Agent
 from engine.core.agent_factory import create_agent
 from engine.registry.tool_registry import ToolRegistry
 from engine.core.agent_instance_manager import AgentConfig, get_agent_manager
+from engine.core.types import StreamChunk
+from services.model_preferences import get_model_preferences
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,13 +15,14 @@ logger = logging.getLogger(__name__)
 
 class BaseAgent:
     """
-    Base class for creating specialized agent types with custom configurations.
-    Subclass this to create agents with specific tools, prompts, and behaviors.
+    Base class for creating specialized agent types.
+    Can act as both a Factory (creating specific configs) and a Wrapper (holding an active instance).
     """
     
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
-        self.model_id = self.config.get("model_id", "gemini-2.5-flash")
+        # Default values (can be overridden by subclasses or preferences)
+        self.model_id = self.config.get("model_id", "gemini-2.5-pro")
         self.provider_name = self.config.get("provider", "google")
         self.max_steps = self.config.get("max_steps", 20)
         self.temperature = self.config.get("temperature", 0.7)
@@ -28,6 +31,9 @@ class BaseAgent:
         self.max_tokens = self.config.get("max_tokens", None)
         self.sensitive_tool_names: Set[str] = self.config.get("sensitive_tool_names", set())
         self.additional_params = self.config.get("additional_params", {})
+        
+        # The active engine instance if this class is used as a wrapper
+        self._engine_agent: Optional[Agent] = None
 
     def _get_project_root(self) -> Path:
         """Dynamically finds the project root."""
@@ -56,28 +62,10 @@ class BaseAgent:
             return "You are a helpful assistant."
 
     def _get_registry(self) -> ToolRegistry:
-        """
-        Override this in subclasses to add specific tools.
-        
-        Example:
-            def _get_registry(self) -> ToolRegistry:
-                registry = ToolRegistry()
-                registry.register(WebSearchTool())
-                registry.register(CodeExecutorTool())
-                return registry
-        """
+        """Override in subclasses to register tools."""
         return ToolRegistry()
 
     def _get_agent_config(self, system_prompt: str) -> AgentConfig:
-        """
-        Create agent configuration. Override to customize config creation.
-        
-        Args:
-            system_prompt: The loaded system prompt
-            
-        Returns:
-            AgentConfig instance
-        """
         return AgentConfig(
             model=self.model_id,
             provider=self.provider_name,
@@ -90,10 +78,6 @@ class BaseAgent:
             sensitive_tool_names=self.sensitive_tool_names,
             additional_params=self.additional_params
         )
-
-    async def run(self):
-        raise NotImplementedError
-
         
     def create(
         self,
@@ -102,108 +86,62 @@ class BaseAgent:
         set_as_current: bool = True
     ) -> Agent:
         """
-        Factory method to create and register the agent using AgentInstanceManager.
-        
-        Args:
-            system_prompt_file: Filename(s) in me/ directory to load as system prompt
-            agent_id: Unique identifier for this agent (defaults to class name)
-            set_as_current: Whether to set this as the current active agent
-            
-        Returns:
-            Created Agent instance
-            
-        Example:
-            class ResearchAgent(BaseAgent):
-                def _get_registry(self):
-                    registry = ToolRegistry()
-                    registry.register(WebSearchTool())
-                    return registry
-            
-            agent = ResearchAgent().create("research_prompt.md", agent_id="researcher")
+        Creates and registers the agent. 
+        Always overwrites any existing agent with the same ID to ensure fresh config and tools.
         """
         system_prompt = self._load_prompt(system_prompt_file)
-        
         manager = get_agent_manager()
         
         if not manager._agent_factory:
             manager.set_agent_factory(create_agent)
-            logger.info("Set agent factory in manager")
+            
+        identifier = agent_id or self.__class__.__name__.lower()
+
+        # --- PREFERENCE OVERRIDE ---
+        # Check if there are saved preferences for this agent
+        prefs = get_model_preferences().get_preference(identifier)
+        if prefs:
+            logger.info(f"Applying persistent model preferences for '{identifier}': {prefs}")
+            # We temporarily update the instance attributes so _get_agent_config uses them
+            if "model_id" in prefs: self.model_id = prefs["model_id"]
+            if "provider" in prefs: self.provider_name = prefs["provider"]
+            if "max_steps" in prefs: self.max_steps = int(prefs["max_steps"])
+            if "temperature" in prefs: self.temperature = float(prefs["temperature"])
+            # Add other overrides as needed
+        # ---------------------------
         
         config = self._get_agent_config(system_prompt)
-        identifier = agent_id or self.__class__.__name__.lower()
         
-        existing_agent = manager.get_agent(identifier)
-        if existing_agent:
-            logger.warning(f"Agent '{identifier}' already exists. Updating configuration.")
-            manager.update_agent(
-                agent_id=identifier,
-                model=config.model,
-                provider=config.provider,
-                system_prompt=config.system_prompt,
-                max_steps=config.max_steps,
-                temperature=config.temperature,
-                top_p=config.top_p,
-                top_k=config.top_k,
-                max_tokens=config.max_tokens,
-                sensitive_tool_names=config.sensitive_tool_names,
-                preserve_memory=False,
-                preserve_registry=False,
-                **config.additional_params
-            )
-            
-            if set_as_current:
-                manager.set_current_agent(identifier)
-            
-            agent = manager.get_agent(identifier)
-        else:
-            manager.create_and_register_agent(
-                agent_id=identifier,
-                config=config,
-                registry=self._get_registry(),
-                metadata={
-                    "created_by": self.__class__.__name__,
-                    "prompt_files": system_prompt_file if isinstance(system_prompt_file, list) else [system_prompt_file]
-                },
-                set_as_current=set_as_current
-            )
-            
-            agent = manager.get_agent(identifier)
         
-        if not agent:
-            raise RuntimeError(f"Failed to retrieve agent '{identifier}' from manager")
-        
-        logger.info(
-            f"Created agent '{identifier}' with model={config.model}, "
-            f"provider={config.provider}, max_steps={config.max_steps}"
+        # Always create fresh to ensure registry is populated correctly.
+        manager.create_and_register_agent(
+            agent_id=identifier,
+            config=config,
+            registry=self._get_registry(),
+            metadata={"created_by": self.__class__.__name__},
+            set_as_current=set_as_current
         )
-        
+        agent = manager.get_agent(identifier)
+
+        self._engine_agent = agent
         return agent
 
-    def get_or_create(
-        self,
-        system_prompt_file: Union[str, List[str]],
-        agent_id: Optional[str] = None,
-        set_as_current: bool = True
-    ) -> Agent:
+    async def run(self, input_text: str) -> str:
         """
-        Get existing agent or create new one if it doesn't exist.
-        
-        Args:
-            system_prompt_file: Filename(s) in me/ directory to load as system prompt
-            agent_id: Unique identifier for this agent
-            set_as_current: Whether to set as current if creating new
-            
-        Returns:
-            Agent instance
+        Executes the agent with the given input. 
+        Requires the agent to be initialized via create().
         """
-        identifier = agent_id or self.__class__.__name__.lower()
-        manager = get_agent_manager()
+        if not self._engine_agent:
+             raise RuntimeError("Agent not initialized. Call create() first.")
         
-        existing = manager.get_agent(identifier)
-        if existing:
-            logger.info(f"Using existing agent: {identifier}")
-            if set_as_current:
-                manager.set_current_agent(identifier)
-            return existing
-        
-        return self.create(system_prompt_file, agent_id, set_as_current)
+        return await self._engine_agent.run(input_text)
+
+    async def stream(self, input_text: str) -> AsyncIterator[StreamChunk]:
+        """
+        Streams the agent execution.
+        """
+        if not self._engine_agent:
+            raise RuntimeError("Agent not initialized. Call create() first.")
+                
+        async for chunk in self._engine_agent.stream(input_text):
+            yield chunk

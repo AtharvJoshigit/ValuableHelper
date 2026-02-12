@@ -255,7 +255,7 @@
     <div class="stars"></div>
     <div class="grid"></div>
 
-    <button class="mode-lazy" onclick="toggleMode()">TOGGLE_VIBE</button>
+    <button class="mode-switch" onclick="toggleMode()">TOGGLE_VIBE</button>
 
     <div class="hud">
         <div class="hud-header">
@@ -312,23 +312,18 @@
         const modeTag = document.getElementById('mode-tag');
         const lazyPupil = document.getElementById('lazy-pupil');
 
-        let currentMode = 'heavy';
-
-        function setMode(mode) {
-            currentMode = mode;
-            if (currentMode === 'lazy') {
-                body.classList.remove('mode-heavy');
-                body.classList.add('mode-lazy');
-                modeTag.innerText = 'MODE: GHOST_VIBE';
-            } else {
-                body.classList.remove('mode-lazy');
-                body.classList.add('mode-heavy');
-                modeTag.innerText = 'MODE: GHOST_VIBE';
-            }
-        }
+        let currentMode = 'lazy';
 
         function toggleMode() {
-            setMode(currentMode === 'heavy' ? 'lazy' : 'heavy');
+            if (currentMode === 'heavy') {
+                currentMode = 'lazy';
+                body.className = 'mode-lazy';
+                modeTag.innerText = 'MODE: GHOST_VIBE';
+            } else {
+                currentMode = 'heavy';
+                body.className = 'mode-heavy';
+                modeTag.innerText = 'MODE: HEAVY_LIFTING';
+            }
         }
 
         // Mouse Interaction
@@ -362,23 +357,14 @@
             socket = new WebSocket(wsUrl);
             socket.onmessage = (e) => {
                 const data = JSON.parse(e.data);
-                
-                // Handle Mode Change Command
-                if (data.mode) {
-                    setMode(data.mode);
-                }
-
-                if (data.status) {
-                    updateStatus(data.status, data.details);
-                }
+                updateState(data.status, data.details);
             };
             socket.onclose = () => setTimeout(connect, 3000);
         }
 
-        function updateStatus(status, details) {
-            // Remove existing status classes (thinking, working, etc.)
-            body.classList.remove('thinking', 'working', 'tool_use', 'idle');
-            body.classList.add(status);
+        function updateState(status, details) {
+            const modeClass = currentMode === 'heavy' ? 'mode-heavy' : 'mode-lazy';
+            body.className = `${modeClass} ${status}`;
             statusVal.innerText = status.toUpperCase();
 
             if (status === 'tool_use' || status === 'working') {

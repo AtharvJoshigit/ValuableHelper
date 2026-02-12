@@ -7,12 +7,6 @@ from src.domain.event import Event, EventType
 from src.infrastructure.event_bus import EventBus
 from src.domain.task import Task
 from src.services.telegram_bot.config import ADMIN_USER_IDS
-# Import telegram types locally inside methods to avoid circular imports if needed, 
-# or ensure bot is initialized. 
-# But notification_service is usually imported by bot.py, so we might have a cycle if we import InlineKeyboard at top level?
-# Actually bot.py imports notification_service. notification_service doesn't import bot. 
-# It just holds a reference to 'app'.
-# We can import InlineKeyboardButton inside the method.
 
 class NotificationService:
     _instance: Optional["NotificationService"] = None
@@ -69,7 +63,6 @@ class NotificationService:
         payload = event.payload
         task_id = payload.get('task_id', 'N/A')
         new_status = payload.get('new_status')
-        # We can add a lookup for title if we want, but ID is safer for now.
         message = f"🔄 <b>Task Status Update</b>\nID: <code>{task_id}</code>\nStatus: {new_status}"
         await self._send_message_to_admins(message)
 
@@ -120,6 +113,27 @@ class NotificationService:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
+        await self._send_message_to_admins(text, reply_markup=reply_markup)
+
+    async def send_plan_approval_request(self, parent_id: str, title: str, subtasks_count: int) -> None:
+        """Sends a specific notification for plan approval."""
+        if not self._application: return
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        text = (
+            f"📋 <b>Plan Review Needed</b>\n"
+            f"Parent: {title}\n"
+            f"Structure: {subtasks_count} subtasks generated.\n\n"
+            f"Approve this execution plan?"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Approve Plan", callback_data=f"approve_task:{parent_id}"),
+                InlineKeyboardButton("❌ Reject Plan", callback_data=f"deny_task:{parent_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await self._send_message_to_admins(text, reply_markup=reply_markup)
 
 # Singleton instance

@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ValH // NEURAL_CORE</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;500&display=swap');
+
+        :root {
+            --bg: #020205;
+            --core-cyan: #00f3ff;
+            --core-violet: #bd00ff;
+            --core-green: #00ff9d;
+            --core-red: #ff0055;
+            --dim: rgba(0, 243, 255, 0.1);
+            --font-main: 'JetBrains Mono', monospace;
+        }
+
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            background-color: var(--bg);
+            color: var(--core-cyan);
+            font-family: var(--font-main);
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            perspective: 1000px;
+        }
+
+        /* --- BACKGROUND AMBIENCE --- */
+        .stars {
+            position: absolute;
+            width: 100%; height: 100%;
+            background: radial-gradient(circle at center, #0a0a1a 0%, #020205 100%);
+            z-index: 0;
+        }
+
+        .grid {
+            position: absolute;
+            width: 200%; height: 200%;
+            background-image: 
+                linear-gradient(var(--dim) 1px, transparent 1px),
+                linear-gradient(90deg, var(--dim) 1px, transparent 1px);
+            background-size: 50px 50px;
+            transform: rotateX(60deg) translateY(-20%);
+            opacity: 0.2;
+            z-index: 1;
+            animation: moveGrid 10s linear infinite;
+        }
+
+        @keyframes moveGrid {
+            from { transform: rotateX(60deg) translateY(0); }
+            to { transform: rotateX(60deg) translateY(50px); }
+        }
+
+        /* --- THE NEURAL CORE (The Heart) --- */
+        .core-container {
+            position: relative;
+            width: 500px; height: 500px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            transition: transform 0.1s ease-out;
+            transform-style: preserve-3d;
+        }
+
+        /* Central Prism */
+        .core-heart {
+            position: absolute;
+            width: 120px; height: 120px;
+            background: radial-gradient(circle, #fff 0%, var(--core-cyan) 30%, transparent 70%);
+            border-radius: 50%;
+            box-shadow: 0 0 60px var(--core-cyan);
+            z-index: 5;
+            animation: pulseCore 3s infinite alternate;
+        }
+
+        /* Orbital Rings */
+        .ring {
+            position: absolute;
+            border-radius: 50%;
+            border: 1px solid var(--dim);
+            transform-style: preserve-3d;
+            transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .ring-1 { width: 200px; height: 200px; border: 2px solid var(--core-cyan); border-right-color: transparent; animation: spin 4s linear infinite; }
+        .ring-2 { width: 300px; height: 300px; border: 1px dashed var(--core-cyan); animation: spin-rev 10s linear infinite; opacity: 0.5; }
+        .ring-3 { width: 450px; height: 450px; border: 1px solid var(--dim); border-top-color: var(--core-cyan); animation: spin 15s linear infinite; }
+
+        /* Satellite Nodes */
+        .node {
+            position: absolute;
+            width: 15px; height: 15px;
+            background: var(--core-cyan);
+            border-radius: 50%;
+            box-shadow: 0 0 15px var(--core-cyan);
+            top: -7px; left: 50%;
+            transform: translateX(-50%);
+        }
+
+        /* --- HUD ELEMENTS --- */
+        .hud {
+            position: fixed;
+            width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 20;
+            padding: 40px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .hud-header { display: flex; justify-content: space-between; align-items: flex-start; }
+        .hud-footer { display: flex; justify-content: space-between; align-items: flex-end; }
+
+        .tag {
+            font-size: 0.7rem;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            background: rgba(0, 243, 255, 0.1);
+            padding: 5px 15px;
+            border-left: 3px solid var(--core-cyan);
+        }
+
+        .status-box {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .status-value { font-weight: 500; font-size: 1.2rem; text-shadow: 0 0 10px var(--core-cyan); }
+
+        .tool-notif {
+            position: absolute;
+            bottom: 150px; left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            opacity: 0;
+            transition: all 0.3s;
+        }
+        .tool-notif.active { opacity: 1; transform: translateX(-50%) translateY(-20px); }
+        .tool-name { font-size: 1.5rem; color: var(--core-green); text-shadow: 0 0 20px var(--core-green); }
+
+        /* --- STATES --- */
+
+        /* THINKING */
+        body.thinking { --core-cyan: var(--core-violet); }
+        body.thinking .core-heart { animation: thinkingHeart 0.5s infinite alternate; }
+        body.thinking .ring-1 { width: 150px; height: 150px; border-width: 4px; }
+        
+        /* WORKING */
+        body.working { --core-cyan: var(--core-green); }
+        body.working .core-heart { width: 10px; height: 250px; border-radius: 5px; animation: scanBeam 1s infinite; }
+        body.working .ring { animation-play-state: paused; opacity: 0.2; }
+
+        /* ALERT */
+        body.alert { --core-cyan: var(--core-red); }
+
+        /* --- ANIMATIONS --- */
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes spin-rev { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
+        @keyframes pulseCore { from { transform: scale(1); opacity: 0.8; } to { transform: scale(1.2); opacity: 1; } }
+        
+        @keyframes thinkingHeart {
+            0% { transform: scale(1) rotate(0deg); border-radius: 50%; }
+            100% { transform: scale(1.5) rotate(180deg); border-radius: 30% 70% 70% 30% / 30% 30% 70% 70%; }
+        }
+
+        @keyframes scanBeam {
+            0% { transform: scaleY(0.5); opacity: 0.5; }
+            50% { transform: scaleY(1.2); opacity: 1; }
+            100% { transform: scaleY(0.5); opacity: 0.5; }
+        }
+
+    </style>
+</head>
+<body id="main-body">
+
+    <div class="stars"></div>
+    <div class="grid"></div>
+
+    <div class="hud">
+        <div class="hud-header">
+            <div class="status-box">
+                <div class="tag">System.Orchestrator</div>
+                <div class="status-value" id="status-val">IDLE</div>
+            </div>
+            <div class="status-box" style="text-align: right;">
+                <div class="tag">User.Atharv</div>
+                <div class="status-value" id="time-val">00:00:00</div>
+            </div>
+        </div>
+
+        <div class="tool-notif" id="tool-box">
+            <div class="tag" style="border: none; background: none; color: var(--core-green);">ACTIVE_PROCESS</div>
+            <div class="tool-name" id="active-tool">NULL</div>
+        </div>
+
+        <div class="hud-footer">
+            <div class="tag" id="coord-val">X: 000 / Y: 000</div>
+            <div class="tag">ValH // V3.0.1_NEURAL_CORE</div>
+        </div>
+    </div>
+
+    <div class="core-container" id="core-wrap">
+        <div class="core-heart" id="heart"></div>
+        <div class="ring ring-1"><div class="node"></div></div>
+        <div class="ring ring-2"><div class="node"></div><div class="node" style="top:auto; bottom:-7px;"></div></div>
+        <div class="ring ring-3"><div class="node"></div></div>
+    </div>
+
+    <script>
+        const body = document.getElementById('main-body');
+        const coreWrap = document.getElementById('core-wrap');
+        const statusVal = document.getElementById('status-val');
+        const timeVal = document.getElementById('time-val');
+        const coordVal = document.getElementById('coord-val');
+        const toolBox = document.getElementById('tool-box');
+        const activeTool = document.getElementById('active-tool');
+
+        // Mouse Interaction
+        document.addEventListener('mousemove', (e) => {
+            const xAxis = (window.innerWidth / 2 - e.clientX) / 15;
+            const yAxis = (window.innerHeight / 2 - e.clientY) / 15;
+            
+            coreWrap.style.transform = `rotateY(${xAxis}deg) rotateX(${yAxis}deg)`;
+            coordVal.innerText = `X: ${Math.floor(e.clientX)} / Y: ${Math.floor(e.clientY)}`;
+        });
+
+        // Live Clock
+        setInterval(() => {
+            const now = new Date();
+            timeVal.innerText = now.toTimeString().split(' ')[0];
+        }, 1000);
+
+        // WebSocket for States
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        let socket;
+
+        function connect() {
+            socket = new WebSocket(wsUrl);
+            socket.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                updateState(data.status, data.details);
+            };
+            socket.onclose = () => setTimeout(connect, 3000);
+        }
+
+        function updateState(status, details) {
+            body.className = status;
+            statusVal.innerText = status.toUpperCase();
+
+            if (status === 'tool_use' || status === 'working') {
+                body.classList.add('working');
+                toolBox.classList.add('active');
+                activeTool.innerText = details ? details.toUpperCase() : 'EXECUTING_LOGIC';
+            } else {
+                toolBox.classList.remove('active');
+            }
+        }
+
+        connect();
+    </script>
+</body>
+</html>

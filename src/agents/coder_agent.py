@@ -15,7 +15,7 @@ class CoderAgent(BaseAgent):
     
     def __init__(self, config: dict = None):
         default_config = {
-            "model_id": "gemini-2.5-pro",
+            "model_id": "gemini-3-flash-prevew",
             "provider": "google",
             "max_steps": 25,
             "temperature": 0.3,
@@ -35,13 +35,6 @@ class CoderAgent(BaseAgent):
         registry.register(SearchAndReplaceTool())
         registry.register(RunCommandTool()) # Added for running tests/checks
         
-        # Integration with System Operator for more complex tasks
-        # operator_agent = SystemOperatorAgent().start()
-        # registry.register(AgentWrapper(
-        #     agent=operator_agent,
-        #     name="system_operator",
-        #     description="Delegate complex file operations, directory structure creation, or multi-step shell commands to this specialist."
-        # ))
 
         return registry
 

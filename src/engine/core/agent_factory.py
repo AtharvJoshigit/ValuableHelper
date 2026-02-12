@@ -6,6 +6,7 @@ from engine.core.agent import Agent
 from engine.core.agent_instance_manager import AgentConfig
 from engine.core.memory import Memory
 from engine.registry.tool_registry import ToolRegistry
+from engine.registry.tool_discovery import ToolDiscovery
 from engine.core.provide import get_provider
 
 logger = logging.getLogger(__name__)
@@ -17,22 +18,22 @@ def create_agent(
 ) -> Agent:
     """
     Factory function to create an agent instance.
-    
-    Args:
-        config: Agent configuration
-        registry: Tool registry (creates new if None)
-        memory: Memory instance (creates new if None)
-        
-    Returns:
-        Configured Agent instance
+    Automatically populates the registry using the Discovery Service if no registry is provided.
     """
     if registry is None:
         registry = ToolRegistry()
-        logger.info("Created new ToolRegistry for agent")
+        discovery = ToolDiscovery()
+        # Default sub-agents do NOT get access to the private 'tools/' folder
+        tools = discovery.discover_tools(include_tools_dir=False)
+        for tool in tools:
+            try:
+                registry.register(tool)
+            except Exception as e:
+                logger.debug(f"Tool {tool.name} already registered or failed: {e}")
+        logger.info(f"Created new ToolRegistry with {len(tools)} auto-discovered tools")
     
     if memory is None:
         memory = Memory()
-        logger.info("Created new Memory for agent")
     
     try:
         agent = Agent(
@@ -40,21 +41,15 @@ def create_agent(
             registry=registry,
             memory=memory
         )
-        logger.info(
-            f"Created agent with model={config.model}, "
-            f"provider={config.provider}, max_steps={config.max_steps}"
-        )
         return agent
-    
     except Exception as e:
         logger.error(f"Failed to create agent: {e}")
         raise
 
 def get_default_config(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-2.0-flash-thinking-exp-1219",
     provider: str = "google"
 ) -> AgentConfig:
-    """Get a default agent configuration."""
     return AgentConfig(
         model=model,
         provider=provider,

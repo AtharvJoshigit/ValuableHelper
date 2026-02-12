@@ -30,7 +30,7 @@ class ResearchAgent(BaseAgent):
     
     def start(self):
         return self.create(
-            system_prompt_file=["my_agents/research_agent.md"],
+            system_prompt_file=["my_agents/research_agent.md", "tools_call.md"],
             agent_id=AGENT_ID.FIXED_RESEARCH_AGENT.value,
             set_as_current=False
         )

@@ -4,7 +4,7 @@ from pydantic import Field
 from engine.registry.base_tool import BaseTool
 
 # Define constant for defaults
-DEFAULT_SAFE_COMMANDS = ["ls", "pwd", "cat", "echo", "mkdir", "python", "pip", "mv", "cp", "touch", "grep", "find", "head", "tail", "sh", "git", "rm"]
+DEFAULT_SAFE_COMMANDS = ["ls", "pwd", "cat", "echo", "mkdir", "python", "pip", "mv", "cp", "touch", "grep", "find", "head", "tail", "sh", "git", "rm", "uv"]
 
 class RunCommandTool(BaseTool):
     name: str = "run_command"
@@ -12,13 +12,13 @@ class RunCommandTool(BaseTool):
     command: Optional[str] = Field(default=None, description="The shell command to execute.")
     allowed_commands: Optional[List[str]] = Field(
         default=None,
-        description="Optional list of whitelisted commands. If not provided, uses default safe commands.",
+        description="Optional list of whitelisted commands. If not provided, uses default safe commands."
         # This is the key part for Google's schema
-        json_schema_extra={
-            "type": "array",
-            "items": {"type": "string"},
-            "default": DEFAULT_SAFE_COMMANDS
-        }
+        # json_schema_extra={
+        #     "type": "array",
+        #     "items": {"type": "string"},
+        #     "default": DEFAULT_SAFE_COMMANDS
+        # }
     )
 
     def execute(self, **kwargs) -> Any:

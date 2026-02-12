@@ -3,6 +3,7 @@ from pydantic import Field, PrivateAttr
 from engine.registry.base_tool import BaseTool
 from src.services.task_store import TaskStore
 from src.domain.task import TaskStatus, TaskPriority
+from src.infrastructure.singleton import Singleton
 
 class AddTaskTool(BaseTool):
     """
@@ -11,7 +12,7 @@ class AddTaskTool(BaseTool):
     name: str = "add_task"
     description: str = "Create a new task with a title, optional description, priority, and dependencies."
     
-    title: Optional[str] = Field("ignore?", description="The title of the task")
+    title: Optional[str] = Field(None, description="The title of the task")
     description_text: Optional[str] = Field(None, alias="description", description="Detailed description of the task")
     priority: str = Field("medium", description="Task priority: low, medium, high, critical")
     dependencies: List[str] = Field(default_factory=list, description="List of dependency task IDs")
@@ -19,13 +20,13 @@ class AddTaskTool(BaseTool):
 
     _store: TaskStore = PrivateAttr()
 
-    def __init__(self, store: TaskStore, **data):
+    def __init__(self, store: Optional[TaskStore] = None, **data):
         super().__init__(**data)
-        self._store = store
+        self._store = store or Singleton.get_task_store()
 
     async def execute(self, **kwargs) -> Any:
         title = kwargs.get("title")
-        description = kwargs.get("description") # Alias maps to this key
+        description = kwargs.get("description")
         priority = kwargs.get("priority", "medium")
         dependencies = kwargs.get("dependencies", [])
         parent_id = kwargs.get("parent_id")
@@ -52,9 +53,9 @@ class ListTasksTool(BaseTool):
 
     _store: TaskStore = PrivateAttr()
 
-    def __init__(self, store: TaskStore, **data):
+    def __init__(self, store: Optional[TaskStore] = None, **data):
         super().__init__(**data)
-        self._store = store
+        self._store = store or Singleton.get_task_store()
 
     async def execute(self, **kwargs) -> Any:
         status = kwargs.get("status")
@@ -84,13 +85,13 @@ class GetTaskTool(BaseTool):
     name: str = "get_task"
     description: str = "Retrieve details of a specific task by its ID."
     
-    task_id: Optional[str] = Field("ignore", description="The ID of the task to retrieve")
+    task_id: Optional[str] = Field(None, description="The ID of the task to retrieve")
 
     _store: TaskStore = PrivateAttr()
 
-    def __init__(self, store: TaskStore, **data):
+    def __init__(self, store: Optional[TaskStore] = None, **data):
         super().__init__(**data)
-        self._store = store
+        self._store = store or Singleton.get_task_store()
 
     async def execute(self, **kwargs) -> Any:
         task_id = kwargs.get("task_id")
@@ -122,14 +123,14 @@ class UpdateTaskStatusTool(BaseTool):
     name: str = "update_task_status"
     description: str = "Update the status of an existing task (e.g., move to 'in_progress' or 'done')."
     
-    task_id: Optional[str] = Field("ignore", description="The ID of the task to update")
-    status: Optional[str] = Field('igore', description="New status: todo, in_progress, done, blocked")
+    task_id: Optional[str] = Field(None, description="The ID of the task to update")
+    status: Optional[str] = Field(None, description="New status: todo, in_progress, done, blocked")
 
     _store: TaskStore = PrivateAttr()
 
-    def __init__(self, store: TaskStore, **data):
+    def __init__(self, store: Optional[TaskStore] = None, **data):
         super().__init__(**data)
-        self._store = store
+        self._store = store or Singleton.get_task_store()
 
     async def execute(self, **kwargs) -> Any:
         task_id = kwargs.get("task_id")
@@ -153,14 +154,14 @@ class AddTaskDependencyTool(BaseTool):
     name: str = "add_task_dependency"
     description: str = "Mark a task as dependent on another task."
     
-    task_id: Optional[str] = Field("ignore", description="The ID of the task that is blocked")
-    dependency_id: Optional[str] = Field("ignore", description="The ID of the task that must be completed first")
+    task_id: Optional[str] = Field(None, description="The ID of the task that is blocked")
+    dependency_id: Optional[str] = Field(None, description="The ID of the task that must be completed first")
 
     _store: TaskStore = PrivateAttr()
 
-    def __init__(self, store: TaskStore, **data):
+    def __init__(self, store: Optional[TaskStore] = None, **data):
         super().__init__(**data)
-        self._store = store
+        self._store = store or Singleton.get_task_store()
 
     async def execute(self, **kwargs) -> Any:
         task_id = kwargs.get("task_id")
@@ -180,14 +181,14 @@ class RemoveTaskDependencyTool(BaseTool):
     name: str = "remove_task_dependency"
     description: str = "Remove a dependency requirement from a task."
     
-    task_id: Optional[str] = Field("ignore", description="The ID of the task to unblock")
-    dependency_id: Optional[str] = Field("ignore", description="The ID of the dependency to remove")
+    task_id: Optional[str] = Field(None, description="The ID of the task to unblock")
+    dependency_id: Optional[str] = Field(None, description="The ID of the dependency to remove")
 
     _store: TaskStore = PrivateAttr()
 
-    def __init__(self, store: TaskStore, **data):
+    def __init__(self, store: Optional[TaskStore] = None, **data):
         super().__init__(**data)
-        self._store = store
+        self._store = store or Singleton.get_task_store()
 
     async def execute(self, **kwargs) -> Any:
         task_id = kwargs.get("task_id")
@@ -207,14 +208,14 @@ class UpdateTaskTool(BaseTool):
     name: str = "update_task"
     description: str = "Update multiple fields of an existing task (title, description, priority, status, parent_id, etc.)."
     
-    task_id: Optional[str] = Field("ignore", description="The ID of the task to update")
+    task_id: Optional[str] = Field(None, description="The ID of the task to update")
     updates: Dict[str, Any] = Field(default_factory=dict, description="Dictionary of fields to update")
 
     _store: TaskStore = PrivateAttr()
 
-    def __init__(self, store: TaskStore, **data):
+    def __init__(self, store: Optional[TaskStore] = None, **data):
         super().__init__(**data)
-        self._store = store
+        self._store = store or Singleton.get_task_store()
 
     async def execute(self, **kwargs) -> Any:
         task_id = kwargs.get("task_id")
@@ -240,13 +241,13 @@ class DeleteTaskTool(BaseTool):
     name: str = "delete_task"
     description: str = "Delete a task from the TaskStore by its ID. This will also remove it from dependencies of other tasks."
     
-    task_id: Optional[str] = Field("ignore", description="The ID of the task to delete")
+    task_id: Optional[str] = Field(None, description="The ID of the task to delete")
 
     _store: TaskStore = PrivateAttr()
 
-    def __init__(self, store: TaskStore, **data):
+    def __init__(self, store: Optional[TaskStore] = None, **data):
         super().__init__(**data)
-        self._store = store
+        self._store = store or Singleton.get_task_store()
 
     async def execute(self, **kwargs) -> Any:
         task_id = kwargs.get("task_id")
@@ -268,19 +269,21 @@ class ListSubtasksTool(BaseTool):
     name: str = "list_subtasks"
     description: str = "List all subtasks associated with a specific parent task ID."
     
-    parent_id: Optional[str] = Field("ignore", description="The ID of the parent task")
-    task_id : Optional[str] = Field("ignore", description="The task_id, optional")
+    parent_id: Optional[str] = Field(None, description="The ID of the parent task")
+    task_id : Optional[str] = Field(None, description="The task_id, optional")
+    
     _store: TaskStore = PrivateAttr()
 
-    def __init__(self, store: TaskStore, **data):
+    def __init__(self, store: Optional[TaskStore] = None, **data):
         super().__init__(**data)
-        self._store = store
-    def _get_parent_id(self, task_id):
+        self._store = store or Singleton.get_task_store()
         
+    def _get_parent_id(self, task_id):
+        if not task_id:
+            return None
         task = self._store.get_task(task_id)
         if task: 
-            return task.get('parent_id', None)
-        
+            return task.parent_id
         return None
         
     async def execute(self, **kwargs) -> Any:

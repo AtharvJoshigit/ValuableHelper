@@ -4,16 +4,12 @@ import html
 import logging
 import asyncio
 import time
-import json
-from typing import Dict, List, Optional
-from agents.agent_id import AGENT_ID
-from domain.event import Event, EventType
-from engine.core import agent_instance_manager
+from typing import Dict, Optional
 from infrastructure.command_bus import CommandBus
 from infrastructure.singleton import Singleton
-from services.task_store import EventBus
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, constants
-from telegram.error import BadRequest, TimedOut, NetworkError
+from src.domain.event import Event, EventType
+from telegram import InlineKeyboardMarkup, Update, constants
+from telegram.error import BadRequest, TimedOut, NetworkError, RetryAfter
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -24,7 +20,6 @@ from telegram.ext import (
     filters,
 )
 
-from engine.core.types import StreamChunk
 from src.services.notification_service import notification_service
 from src.services.telegram_bot.config import AUTHORIZED_USERS
 
@@ -34,23 +29,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global State (In-Memory)
-user_sessions: Dict[int, object] = {} # ChatID -> Agent Instance
-user_locks: Dict[int, asyncio.Lock] = {} # ChatID -> Lock
+# Global State
 _task_store = Singleton.get_task_store()
-command_bus = CommandBus()
 
 # Tracks the LAST message ID sent by the bot for a given chat.
-# Used to determine if we should edit the existing message (streaming) or send a new one.
 _bot_messages: Dict[int, int] = {}
+# Track typing tasks
+_typing_tasks: Dict[int, asyncio.Task] = {}
+
+# Rate limiting state
+_last_update_time: Dict[int, float] = {}
+UPDATE_INTERVAL = 1.0  # Seconds between edits
 
 def authorized_only(func):
     @wraps(func)
-    async def wrapped(*args, **kwargs):
+    async def wrapped(self, *args, **kwargs):
+        # Handle both (update, context) and (self, update, context)
         update = next((arg for arg in args if isinstance(arg, Update)), None)
-
+        
         if not update or not update.effective_user:
-            return await func(*args, **kwargs)
+            return await func(self, *args, **kwargs)
 
         user_id = update.effective_user.id
 
@@ -60,14 +58,13 @@ def authorized_only(func):
                 await update.message.reply_text("🚫 Access Denied.")
             return
 
-        return await func(*args, **kwargs)
+        return await func(self, *args, **kwargs)
     return wrapped
 
 class TelegramBotService:
-    def __init__(self, token: str, bus):
+    def __init__(self, token: str, bus: CommandBus):
         self.token = token
         self.application: Optional[Application] = None
-        self._is_running = False
         self.bus = bus
 
     async def start(self):
@@ -75,105 +72,163 @@ class TelegramBotService:
             logger.error("TELEGRAM_BOT_TOKEN not found.")
             return
 
-        # Increase connection pool limits/timeouts if needed via request=... 
-        # For now, we'll stick to default builder but tweak polling.
         self.application = ApplicationBuilder().token(self.token).build()
 
+        # Command Handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("reset", self.reset_command))
         self.application.add_handler(CommandHandler("tasks", self.tasks_command))
-        self.application.add_handler(CommandHandler("stats", self.stats_command))
+        
+        # Message Handler
         self.application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
+        
+        # Callback Handler
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
+        # Register with notification service
         notification_service.set_application(self.application)
 
-        # ✅ NON-blocking polling with increased robustness
         await self.application.initialize()
         await self.application.start()
         
-        # Explicit timeouts to help with "Connection Timed Out" logs
         await self.application.updater.start_polling(
-            poll_interval=1.0,     # Check for updates every 1s
-            timeout=10,            # Long-polling timeout
-            read_timeout=20,       # Socket read timeout (must be > timeout)
-            write_timeout=20       # Socket write timeout
+            poll_interval=1.0,
+            timeout=10,
+            read_timeout=20,
+            write_timeout=20
         )
         logger.info("🤖 Telegram Polling Active")
 
     async def stop(self):
         if self.application:
+            # Cancel all typing tasks
+            for task in _typing_tasks.values():
+                task.cancel()
+            _typing_tasks.clear()
+            
             await self.application.updater.stop()
             await self.application.stop()
             await self.application.shutdown()
+
+    async def _typing_loop(self, chat_id):
+        """Sends the typing action every 4 seconds until cancelled."""
+        try:
+            while True:
+                if self.application:
+                    await self.application.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
+                await asyncio.sleep(4) 
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Typing loop error: {e}")
 
     async def send_or_edit(
         self,
         chat_id: int,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        is_final: bool = False
     ):
         if not self.application:
             return
 
         bot = self.application.bot
-        
         safe_text = text.strip()
+        
+        # If text is empty and it's final, we might want to just stop typing
+        if not safe_text and is_final:
+            if chat_id in _typing_tasks:
+                _typing_tasks[chat_id].cancel()
+                del _typing_tasks[chat_id]
+            return
+            
         if not safe_text: return 
 
-        if len(safe_text) > 4000:
-             safe_text = safe_text[:4000] + "\n...(truncated)"
+        # Cancel typing if we are sending a substantial update or finishing
+        if is_final or len(safe_text) > 50:
+            if chat_id in _typing_tasks:
+                _typing_tasks[chat_id].cancel()
+                del _typing_tasks[chat_id]
 
-        # New message logic
-        # If we don't have a tracked message for this chat, OR if the tracked message is invalid, send NEW.
+        # Truncate if too long
+        if len(safe_text) > 4000:
+            safe_text = safe_text[:4000] + "\n...(truncated)"
+
+        # Rate Limiting Logic:
+        # If this is NOT the final message, and we edited recently, SKIP this update.
+        now = time.time()
+        last_time = _last_update_time.get(chat_id, 0)
+        
+        if not is_final and (now - last_time) < UPDATE_INTERVAL:
+            # Skip update to prevent flood limits
+            return
+
+        # Determine parse mode
+        parse_mode = constants.ParseMode.HTML if is_final else None
+
+        # Logic: If we haven't sent a message in this "turn", send a new one.
+        # Otherwise, edit the existing one.
         if chat_id not in _bot_messages:
             try:
                 msg = await bot.send_message(
                     chat_id=chat_id,
                     text=safe_text,
-                    parse_mode=constants.ParseMode.HTML,
+                    parse_mode=parse_mode,
                     reply_markup=reply_markup,
                 )
                 _bot_messages[chat_id] = msg.message_id
+                _last_update_time[chat_id] = now
             except Exception as e:
-                logger.error(f"Error sending message: {e}")
+                logger.error(f"Error sending new message: {e}")
             return
 
-        # Edit logic
+        # Edit existing message
         try:
             await bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=_bot_messages[chat_id],
                 text=safe_text,
-                parse_mode=constants.ParseMode.HTML,
+                parse_mode=parse_mode,
                 reply_markup=reply_markup,
             )
+            _last_update_time[chat_id] = now
+            
+        except RetryAfter as e:
+            logger.warning(f"Rate limited by Telegram. Sleeping {e.retry_after}s")
+            if is_final:
+                await asyncio.sleep(e.retry_after)
+                try:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=_bot_messages[chat_id],
+                        text=safe_text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                    )
+                except Exception:
+                    pass
+
         except BadRequest as e:
             if "message is not modified" in str(e):
                 return
-            
-            # If edit fails (e.g. message too old, or deleted by user), send NEW and update tracker
-            logger.warning(f"Edit failed ({e}), sending new message.")
-            try:
-                msg = await bot.send_message(
-                    chat_id=chat_id,
-                    text=safe_text,
-                    parse_mode=constants.ParseMode.HTML,
-                    reply_markup=reply_markup,
-                )
-                _bot_messages[chat_id] = msg.message_id
-            except Exception as send_e:
-                logger.error(f"Error sending fallback message: {send_e}")
-        except TimedOut:
-            logger.warning("Telegram TimedOut during edit - ignoring.")
-        except NetworkError:
-            logger.warning("Telegram NetworkError during edit - ignoring.")
+            if "can't parse entities" in str(e):
+                try:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=_bot_messages[chat_id],
+                        text=safe_text,
+                        parse_mode=None,
+                        reply_markup=reply_markup,
+                    )
+                except Exception:
+                    pass
+        except (TimedOut, NetworkError):
+            logger.warning("Telegram network issue during edit - ignoring.")
 
     @authorized_only
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Reset tracker on start
         chat_id = update.effective_chat.id
         if chat_id in _bot_messages: del _bot_messages[chat_id]
         await update.message.reply_text("Hi! I'm your engineering partner. Let's get to work.")
@@ -181,27 +236,28 @@ class TelegramBotService:
     @authorized_only
     async def reset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
-        if chat_id in user_sessions:
-            del user_sessions[chat_id]
-        if 'chunks' in context.user_data:
-            del context.user_data['chunks']
+        await self.bus.send(Event(
+            type=EventType.USER_MESSAGE,
+            payload={
+                "chat_id": chat_id,
+                "text": "System: Please reset my session memory."
+            },
+            source="telegram"
+        ))
         
-        # Clear message tracker so next msg is new
         if chat_id in _bot_messages: del _bot_messages[chat_id]
-            
-        await update.message.reply_text("Memory wiped. Starting fresh.")
+        await update.message.reply_text("🔄 Session reset request sent.")
 
     @authorized_only
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
         text = update.message.text
-        
-        # CRITICAL FIX: User sent a NEW message. 
-        # We must forget the previous bot response so we reply with a NEW message.
         if chat_id in _bot_messages:
             del _bot_messages[chat_id]
             
         logger.info(f"Received message from {chat_id}")
+        if chat_id not in _typing_tasks:
+            _typing_tasks[chat_id] = asyncio.create_task(self._typing_loop(chat_id))
         
         await self.bus.send(Event(
             type=EventType.USER_MESSAGE,
@@ -211,41 +267,21 @@ class TelegramBotService:
             },
             source="telegram"
         ))
-        
-        await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
-
-    @authorized_only
-    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        chat_id = update.effective_chat.id
-        # Force new message for stats
-        if chat_id in _bot_messages: del _bot_messages[chat_id]
-            
-        if chat_id not in user_sessions:
-            await update.message.reply_text("No active session.", parse_mode=constants.ParseMode.HTML)
-            return
-        
-        agent = self.get_or_create_agent(chat_id)
-        msg_count = getattr(agent, 'message_count', 'N/A')
-        tool_count = getattr(agent, 'tool_call_count', 'N/A')
-        
-        stats_text = f"""📊 <b>Session Stats</b>\n\n💬 Messages: {msg_count}\n🛠️ Tools: {tool_count}"""
-        await update.message.reply_text(stats_text, parse_mode=constants.ParseMode.HTML)
 
     @authorized_only
     async def tasks_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
-        # Force new message for tasks
         if chat_id in _bot_messages: del _bot_messages[chat_id]
 
         try:
-            pending = _task_store.list_tasks(status=["todo", "in_progress", "blocked", "waiting_approval"])
+            pending = _task_store.list_tasks(status=["todo", "in_progress", "blocked", "waiting_approval", "waiting_review"])
             if not pending:
                 await update.message.reply_text("✅ All clear!", parse_mode=constants.ParseMode.HTML)
                 return
             
             response = "📋 <b>Current Tasks</b>\n\n"
             for task in pending:
-                emoji = {"todo": "⏳", "in_progress": "🔄", "blocked": "⚠️", "waiting_approval": "👀"}.get(task.status, "•")
+                emoji = {"todo": "⏳", "in_progress": "🔄", "blocked": "⚠️", "waiting_approval": "👀", "waiting_review": "🔎"}.get(task.status, "•")
                 response += f"{emoji} <b>{html.escape(task.title)}</b>\n   Status: {task.status}\n\n"
             
             await update.message.reply_text(response, parse_mode=constants.ParseMode.HTML)
@@ -257,14 +293,27 @@ class TelegramBotService:
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
+        
         data = query.data
+        task_id = None
+        approved = False
+        
+        if data.startswith("approve_task:"):
+            task_id = data.split(":")[1]
+            approved = True
+        elif data.startswith("deny_task:"):
+            task_id = data.split(":")[1]
+            approved = False
+        else:
+            # Fallback for generic approval
+            approved = (data == "approve")
 
-        if query.data in ["approve", "deny"]:
-            await self.bus.send(Event(
-                type=EventType.USER_APPROVAL,
-                payload={
-                    "chat_id": query.message.chat_id,
-                    "approved": query.data == "approve"
-                },
-                source="telegram"
-            ))
+        await self.bus.send(Event(
+            type=EventType.USER_APPROVAL,
+            payload={
+                "chat_id": query.message.chat_id,
+                "approved": approved,
+                "task_id": task_id
+            },
+            source="telegram"
+        ))

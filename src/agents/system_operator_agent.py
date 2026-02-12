@@ -38,9 +38,6 @@ class SystemOperatorAgent(BaseAgent):
         # Register System/Command Tools
         registry.register(RunCommandTool(command='ls'))
 
-        #Approval tool 
-        # registry.register(RequestApprovalTool(action_type="create_file", action_details={"summery": "Initializing the object"}))
-
         return registry
 
     def start(self):

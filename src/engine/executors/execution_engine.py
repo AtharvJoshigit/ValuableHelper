@@ -68,7 +68,7 @@ class ExecutionEngine:
             return ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
-                result="Tool {call.name} timed out after {timeout}",
+                result=f"Tool {call.name} timed out after {timeout}s",
                 error=f"Tool execution timed out after {timeout}s"
             )
         except Exception as e:
@@ -76,6 +76,6 @@ class ExecutionEngine:
             return ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
-                result="Error executing tool {call.name}: {e}",
+                result=f"Error executing tool {call.name}: {e}",
                 error=str(e)
             )

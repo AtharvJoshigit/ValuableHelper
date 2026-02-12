@@ -14,7 +14,7 @@ from engine.registry.tool_registry import ToolRegistry
 class PlanManagerAgent(BaseAgent):
     def __init__(self, config: dict = None):
         default_config = {
-            "model_id": "gemini-3-flash-preview",
+            "model_id": "gemini-2.5-pro",
             "provider": "google",
             "max_steps": 25,
             "temperature": 0.3,
@@ -36,38 +36,22 @@ class PlanManagerAgent(BaseAgent):
         registry.register(ReadFileTool())
         # 1. The Core Memory: Task Store
         # We pass the shared store instance so everyone sees the same tasks
-        registry.register(AddTaskTool(self.task_store))
-        registry.register(UpdateTaskStatusTool(self.task_store))
-        registry.register(ListTasksTool(self.task_store))
-        registry.register(AddTaskDependencyTool(self.task_store))
-        registry.register(RemoveTaskDependencyTool(self.task_store))
-        registry.register(UpdateTaskTool(self.task_store))
-        registry.register(DeleteTaskTool(self.task_store))
-        registry.register(ListSubtasksTool(self.task_store))
-        registry.register(GetTaskTool(self.task_store))
+        registry.register(AddTaskTool())
+        registry.register(UpdateTaskStatusTool())
+        registry.register(ListTasksTool())
+        registry.register(AddTaskDependencyTool())
+        registry.register(RemoveTaskDependencyTool())
+        registry.register(UpdateTaskTool())
+        registry.register(DeleteTaskTool())
+        registry.register(ListSubtasksTool())
+        registry.register(GetTaskTool())
 
-        
-        # 2. The Hands: System Operator
-        # operator_agent = SystemOperatorAgent().start()
-        # registry.register(AgentWrapper(
-        #     agent=operator_agent,
-        #     name="system_operator",
-        #     description="Delegate file operations and shell commands to this agent."
-        # ))
-
-        # # 3. The Brains: Coder Agent
-        # coder_agent = CoderAgent().start()
-        # registry.register(AgentWrapper(
-        #     agent=coder_agent,
-        #     name="coder_agent",
-        #     description="Delegate code writing, refactoring, and testing to this agent."
-        # ))
-        
+    
         return registry
 
     def start(self):
         return self.create(
-            system_prompt_file=["my_agents/plan_manager_prompt.md", "memory.md", "tools_call.md"],
+            system_prompt_file=["my_agents/plan_manager_prompt.md", "tools_call.md"],
             agent_id=AGENT_ID.FIXED_PLANER_AGENT.value,
             set_as_current=False
         )

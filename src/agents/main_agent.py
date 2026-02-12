@@ -1,29 +1,19 @@
 import asyncio
 import logging
-from typing import Dict
+import uuid
+from typing import Dict, Any
 
 from agents.agent_id import AGENT_ID
 from engine.core.agent import Agent
-from src.infrastructure.command_bus import CommandBus
-from engine.core.types import StreamChunk
 from engine.registry.tool_registry import ToolRegistry
+from engine.registry.tool_discovery import ToolDiscovery
+from src.infrastructure.command_bus import CommandBus
+from src.infrastructure.websocket_manager import get_websocket_manager
 from src.domain.event import Event, EventType
-from src.infrastructure.singleton import Singleton
-from services.plan_director import PlanDirector
-
-from engine.registry.library.system_tools import RunCommandTool
-from engine.registry.library.filesystem_tools import (
-    CreateFileTool,
-    ListDirectoryTool,
-    ReadFileTool,
-)
-from engine.registry.library.telegram_tools import SendTelegramMessageTool
-from tools.gmail_tool import GmailSearchTool, GmailReadTool, GmailSendTool
 
 from .base_agent import BaseAgent
 
 logger = logging.getLogger(__name__)
-
 
 class MainAgent(BaseAgent):
     """
@@ -33,11 +23,10 @@ class MainAgent(BaseAgent):
 
     def __init__(self, bot_gateway, bus, config: dict | None = None):
         default_config = {
-            "model_id": "gemini-3-pro-preview",
+            "model_id": "gemini-3-flash-preview",
             "provider": "google",
             "max_steps": 25,
             "temperature": 0.3,
-            "sensitive_tool_names": {},  # can be extended
         }
         if config:
             default_config.update(config)
@@ -45,124 +34,111 @@ class MainAgent(BaseAgent):
         super().__init__(default_config)
 
         self.command_bus = bus
-        self.bot = bot_gateway  # Telegram / Console adapter
+        self.bot = bot_gateway
         self.running = True
-
-        # One agent instance per chat
+        self.ws_manager = get_websocket_manager()
         self._agents: Dict[int, Agent] = {}
 
-        
-
-    # ------------------------------------------------------------------
-    # Registry (UNCHANGED from your design)
-    # ------------------------------------------------------------------
-
     def _get_registry(self) -> ToolRegistry:
+        """
+        Dynamically builds the 'God Mode' toolset using the Discovery Service.
+        Main Agent gets everything, including the private 'tools/' folder.
+        """
         registry = ToolRegistry()
-        task_store = Singleton.get_task_store()
-
-        registry.register(ListDirectoryTool())
-        registry.register(ReadFileTool())
-        registry.register(CreateFileTool(file_path=".", content=".."))
-        registry.register(RunCommandTool(command="ls"))
-
-        registry.register(SendTelegramMessageTool())
-
-        registry.register(GmailSearchTool())
-        registry.register(GmailReadTool())
-        registry.register(GmailSendTool())
+        
+        # Use the Discovery Service to find and register all tools
+        discovery = ToolDiscovery()
+        tools = discovery.discover_tools(include_tools_dir=True)
+        
+        for tool in tools:
+            try:
+                registry.register(tool)
+            except Exception as e:
+                logger.warning(f"Failed to register discovered tool {tool.name}: {e}")
 
         return registry
 
-    # ------------------------------------------------------------------
-    # Agent factory (per chat)
-    # ------------------------------------------------------------------
-
     def _get_or_create_agent(self, chat_id: int) -> Agent:
         if chat_id not in self._agents:
+            session_agent_id = f"main_agent_{chat_id}"
+            
             self._agents[chat_id] = self.create(
                 system_prompt_file=[
-                    "whoami.md",
+                    "identity.md",
+                    "system.md"
                     "user.md",
                     "memory.md",
                     "tools_call.md",
+                    "lessons.md"
                 ],
-                agent_id=AGENT_ID.MAIN_AGENT.value,
+                agent_id=session_agent_id,
+                set_as_current=True 
             )
+            logger.info(f"✨ Created new agent session: {session_agent_id}")
+            
         return self._agents[chat_id]
 
-    # ------------------------------------------------------------------
-    # MAIN LOOP (this is what you were missing)
-    # ------------------------------------------------------------------
-
     async def run(self):
-        """
-        Single async loop that drives the entire system.
-        """
-        logger.info("🧠 MainAgent loop started")
-
+        logger.info("🧠 MainAgent orchestrator loop started")
         while self.running:
-            event: Event = await self.command_bus.receive()
-
-            if event.type == EventType.USER_MESSAGE:
-                await self._handle_user_message(event)
-
-            elif event.type == EventType.USER_APPROVAL:
-                await self._handle_user_approval(event)
-
-    # ------------------------------------------------------------------
-    # Event handlers
-    # ------------------------------------------------------------------
+            try:
+                event: Event = await self.command_bus.receive()
+                if event.type == EventType.USER_MESSAGE:
+                    asyncio.create_task(self._handle_user_message(event))
+                elif event.type == EventType.USER_APPROVAL:
+                    asyncio.create_task(self._handle_user_approval(event))
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in MainAgent loop: {e}", exc_info=True)
 
     async def _handle_user_message(self, event: Event):
         chat_id = event.payload["chat_id"]
         text = event.payload["text"]
+        await self.ws_manager.broadcast_status("thinking", details="Processing User Message")
 
-        agent = self._get_or_create_agent(chat_id)
+        try:
+            agent = self._get_or_create_agent(chat_id)
+            full_response_text = ""
+            
+            async for chunk in agent.stream(text):
+                if chunk.content:
+                    full_response_text += chunk.content
+                    await self.bot.send_or_edit(chat_id=chat_id, text=full_response_text)
+                
+                if chunk.tool_result:
+                    tool_name = chunk.tool_result.name
+                    logger.info(f"🔧 Tool Execution: {tool_name}")
+                    await self.ws_manager.broadcast_status("tool_use", details=tool_name)
+                    await asyncio.sleep(0.5) 
 
-        async for chunk in agent.stream(text):
-            await self._handle_stream_chunk(chat_id, chunk)
+            await self.bot.send_or_edit(chat_id=chat_id, text=full_response_text, is_final=True)
+        except Exception as e:
+            logger.error(f"Error handling message: {e}")
+            await self.bot.send_or_edit(chat_id=chat_id, text=f"⚠️ Error: {str(e)}", is_final=True)
+        finally:
+            await self.ws_manager.broadcast_status("idle")
 
     async def _handle_user_approval(self, event: Event):
         chat_id = event.payload["chat_id"]
         approved = event.payload["approved"]
+        await self.ws_manager.broadcast_status("thinking", details="Processing Approval")
 
-        agent = self._get_or_create_agent(chat_id)
-        reply = "approve" if approved else "deny"
+        try:
+            agent = self._get_or_create_agent(chat_id)
+            reply = "User approved the action." if approved else "User denied the action."
+            full_response_text = ""
 
-        async for chunk in agent.stream(reply):
-            await self._handle_stream_chunk(chat_id, chunk)
+            async for chunk in agent.stream(reply):
+                if chunk.content:
+                    full_response_text += chunk.content
+                    await self.bot.send_or_edit(chat_id=chat_id, text=full_response_text)
 
-    # ------------------------------------------------------------------
-    # Stream handling
-    # ------------------------------------------------------------------
-
-    async def _handle_stream_chunk(self, chat_id: int, chunk: StreamChunk):
-        """
-        Converts Agent stream output into UI updates.
-        """
-
-        # if chunk.permission_request:
-        #     await self.bot.request_approval(
-        #         chat_id=chat_id,
-        #         tools=chunk.permission_request,
-        #     )
-        #     return
-
-        if chunk.content:
-            await self.bot.send_or_edit(
-                chat_id=chat_id,
-                text=chunk.content,
-            )
-
-        if chunk.tool_result:
-            logger.info(
-                f"Tool completed: {chunk.tool_result.name} ({chat_id})"
-            )
-
-    # ------------------------------------------------------------------
-    # Shutdown
-    # ------------------------------------------------------------------
+            await self.bot.send_or_edit(chat_id=chat_id, text=full_response_text, is_final=True)
+        except Exception as e:
+             logger.error(f"Error handling approval: {e}")
+        finally:
+             await self.ws_manager.broadcast_status("idle")
 
     async def stop(self):
         self.running = False
