@@ -94,6 +94,7 @@ class AgentInstanceManager:
             raise ValueError("Agent factory not set. Call set_agent_factory() first.")
         
         agent = self._agent_factory(
+            agent_id = agent_id,
             config=config,
             registry=registry,
             memory=memory
@@ -322,10 +323,12 @@ class AgentInstanceManager:
         new_registry = old_instance.registry if preserve_registry else None
         
         new_agent = self._agent_factory(
+            agent_id=agent_id,
             config=new_config,
             registry=new_registry,
             memory=new_memory
         )
+        print(f"\n\n {new_config}\n\n")
         
         new_instance = AgentInstance(
             agent=new_agent,

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import logging
 from typing import List, Iterator, Optional, Any, Dict
@@ -17,12 +18,13 @@ class GoogleProvider(BaseProvider):
     Google Gemini provider implementation using the new google-genai SDK.
     """
     
-    def __init__(self, model_id: str = "gemini-1.5-flash", api_key: Optional[str] = None):
+    def __init__(self, model_id: str = "gemini-1.5-flash", api_key: Optional[str] = None, **kwargs):
         """
         Initialize the Google provider.
         """
         self.model_id = model_id
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY")
+        self.config = kwargs
         if not self.api_key:
             raise ValueError("Google API key must be provided or set in GOOGLE_API_KEY environment variable.")
             
@@ -116,18 +118,48 @@ class GoogleProvider(BaseProvider):
             "object": genai_types.Type.OBJECT,
         }
         return type_mapping.get(json_type, genai_types.Type.STRING)
+    
+    def _get_config(self, tools: List[BaseTool]) -> genai_types.GenerateContentConfig :
+        print(f"----------{self.config.get(
+                "additional_params", {}).get("include_thoughts")}----------")
+        if tools:
+            function_declarations = self._create_function_declarations(tools)
+            tool = genai_types.Tool(function_declarations=function_declarations)
+            return genai_types.GenerateContentConfig(
+                tools=[tool],
+                temperature=self.config.get('temp'),
+                top_k=self.config.get('top_k'),
+                top_p=self.config.get('top_p'),
+                max_output_tokens = self.config.get('max_tokens'),
+                response_schema = self.config.get('response_schema'),
+                automatic_function_calling = self.config.get('automatic_function_calling', {
+                    'disable': True,
+                    'maximum_remote_calls' : 0
+                    }
+                ),
+                thinking_config = genai_types.ThinkingConfig(include_thoughts=self.config.get(
+                "additional_params", {}).get("include_thoughts"))
+            )
+        return genai_types.GenerateContentConfig(
+            temperature=self.config.get('temp'),
+            top_k=self.config.get('top_k'),
+            top_p=self.config.get('top_p'),
+            max_output_tokens = self.config.get('max_tokens'),
+            response_schema = self.config.get('response_schema'),
+            automatic_function_calling = self.config.get('automatic_function_calling', {
+                'disable': True,
+                'maximum_remote_calls' : 0
+                },
+            ),
+            thinking_config = genai_types.ThinkingConfig(include_thoughts=self.config.get(
+                "additional_params", {}).get("include_thoughts"))
+        )
 
     async def generate(self, history: List[Message], tools: List[BaseTool]) -> AgentResponse:
         """
         Generate a response from the model.
         """
         contents = GoogleAdapter.convert_history(history)
-        
-        config = None
-        if tools:
-            function_declarations = self._create_function_declarations(tools)
-            tool = genai_types.Tool(function_declarations=function_declarations)
-            config = genai_types.GenerateContentConfig(tools=[tool])
 
         try:
             loop = asyncio.get_event_loop()
@@ -136,7 +168,7 @@ class GoogleProvider(BaseProvider):
                 lambda: self.client.models.generate_content(
                     model=self.model_id,
                     contents=contents,
-                    config=config
+                    config= self._get_config(tools),
                 )
             )
             return GoogleAdapter.convert_response(response)
@@ -151,21 +183,16 @@ class GoogleProvider(BaseProvider):
         """
         contents = GoogleAdapter.convert_history(history)
         
-        config = None
-        if tools:
-            function_declarations = self._create_function_declarations(tools)
-            tool = genai_types.Tool(function_declarations=function_declarations)
-            config = genai_types.GenerateContentConfig(tools=[tool])
 
         max_retries = 3
         retry_delay = 1.5
-
         for attempt in range(max_retries):
             try:
+                print(f"------------{self.model_id}--------------")
                 response_iterator = self.client.models.generate_content_stream(
                     model=self.model_id,
                     contents=contents,
-                    config=config
+                    config= self._get_config(tools)
                 )
                 
                 for chunk in response_iterator:

@@ -1,5 +1,6 @@
 # file: engine/core/agent.py (updated)
 
+import json
 import logging
 import asyncio
 import uuid
@@ -20,6 +21,9 @@ from domain.event import Event, EventType
 
 logger = logging.getLogger(__name__)
 
+STREAM_WATCHDOG_TIMEOUT = 30.0  # seconds
+STREAM_RETRY_LIMIT = 1
+
 class Agent:
     """
     The main Agent Orchestrator.
@@ -28,11 +32,13 @@ class Agent:
 
     def __init__(
         self,
+        agent_id: str,
         config: AgentConfig,
         registry: ToolRegistry,
         memory: Optional[Memory] = None
     ):
         self.config = config
+        self.agent_id = agent_id
         self.provider = get_provider(
             config.provider,
             model=config.model,
@@ -120,6 +126,30 @@ class Agent:
 
         raise MaxStepsExceededError(f"Max steps ({self.max_steps}) reached without final answer.")
 
+    async def _stream_with_watchdog(
+        self,
+        history,
+        tools
+    ) -> AsyncIterator[StreamChunk]:
+        """
+        Streams from provider with a watchdog.
+        Aborts if no chunk is received within STREAM_WATCHDOG_TIMEOUT.
+        """
+        stream = self.provider.stream(history, tools)
+        last_chunk_time = asyncio.get_running_loop().time()
+
+        async for chunk in stream:
+            last_chunk_time = asyncio.get_running_loop().time()
+            yield chunk
+
+            # cooperative check (cheap, non-blocking)
+            if (
+                asyncio.get_running_loop().time() - last_chunk_time
+                > STREAM_WATCHDOG_TIMEOUT
+            ):
+                raise asyncio.TimeoutError("LLM stream stalled")
+    
+    
     async def stream(self, input_text: str) -> AsyncIterator[StreamChunk]:
         try:
             if self.pending_tool_calls:
@@ -142,6 +172,7 @@ class Agent:
                         tool_results.append(ToolResult(
                             tool_call_id=call.id,
                             name=call.name,
+                            agent_id = self.agent_id,
                             result=None,
                             error=f"User denied permission. Input: {input_text}"
                         ))
@@ -167,14 +198,38 @@ class Agent:
                 full_content = ""
                 tool_calls = []
                 
-                async for chunk in self.provider.stream(history, tools):
-                    if chunk.content:
-                        full_content += chunk.content
-                    if chunk.tool_call:
-                        if not chunk.tool_call.id:
-                            chunk.tool_call.id = f"call_{uuid.uuid4().hex[:8]}"
-                        tool_calls.append(chunk.tool_call)
-                    yield chunk
+                retry_count = 0
+
+                while True:
+                    try:
+                        async for chunk in self._stream_with_watchdog(history, tools):
+                            if chunk.content:
+                                full_content += chunk.content
+
+                            if chunk.tool_call:
+                                if not chunk.tool_call.id:
+                                    chunk.tool_call.id = f"call_{uuid.uuid4().hex[:8]}"
+                                    chunk.tool_call.agent = self.agent_id
+                                tool_calls.append(chunk.tool_call)
+
+                            yield chunk
+
+                        break  # stream completed successfully
+
+                    except asyncio.TimeoutError:
+                        logger.warning("⚠️ LLM stream stalled >30s, retrying...")
+                        retry_count += 1
+
+                        if retry_count > STREAM_RETRY_LIMIT:
+                            raise AgentError("LLM stream repeatedly stalled")
+
+                        # Inform user (non-breaking UX)
+                        yield StreamChunk(
+                            content="\n\n⚠️ Model stalled. Retrying response...\n"
+                        )
+
+                        # IMPORTANT: do NOT mutate memory again
+                        continue
 
                 assistant_msg = Message(
                     role=Role.ASSISTANT,
@@ -194,7 +249,7 @@ class Agent:
 
                 async for chunk in self._execute_and_stream_tools(tool_calls):
                     yield chunk
-
+            
             yield StreamChunk(content="\n\nMax steps reached without final answer.")
             raise MaxStepsExceededError(f"Max steps ({self.max_steps}) reached without final answer.")
         except AgentError as e:
@@ -205,3 +260,4 @@ class Agent:
             logger.error(f"Unexpected Agent Error: {e}")
             yield StreamChunk(content=f'\n\n❌ Encountered Error: {e}')
             raise AgentError(str(e)) from e
+        

@@ -73,6 +73,7 @@ class ObservabilityService:
         await self.ws_manager.broadcast({
             "type": "tool_execution_started",
             "payload": {
+                "agent_id": event.payload.get("agent_id"),
                 "tool_name": event.payload.get("tool_name"),
                 "arguments": event.payload.get("arguments")
             }
@@ -83,6 +84,7 @@ class ObservabilityService:
             "type": "log",
             "level": "info",
             "source": "ToolExecutor",
+            "agent_id": event.payload.get("agent_id"),
             "message": f"🛠️ Executing {event.payload.get('tool_name')}...",
             "details": event.payload.get("arguments"),
         })
@@ -92,6 +94,7 @@ class ObservabilityService:
         await self.ws_manager.broadcast({
             "type": "tool_execution_completed",
             "payload": {
+                "agent_id": event.payload.get("agent_id"),
                 "tool_name": event.payload.get("tool_name"),
                 "result": event.payload.get("result")
             }
@@ -102,6 +105,7 @@ class ObservabilityService:
             "type": "log",
             "level": "success",
             "source": "ToolExecutor",
+            "agent_id": event.payload.get("agent_id"),
             "message": f"✅ {event.payload.get('tool_name')} finished.",
             "details": event.payload.get("result"),
         })
@@ -111,6 +115,7 @@ class ObservabilityService:
         await self.ws_manager.broadcast({
             "type": "tool_execution_failed",
             "payload": {
+                "agent_id": event.payload.get("agent_id"),
                 "tool_name": event.payload.get("tool_name"),
                 "error": event.payload.get("error")
             }
@@ -121,6 +126,7 @@ class ObservabilityService:
             "type": "log",
             "level": "error",
             "source": "ToolExecutor",
+            "agent_id": event.payload.get("agent_id"),
             "message": f"❌ {event.payload.get('tool_name')} failed.",
             "details": event.payload.get("error"),
         })
@@ -130,6 +136,7 @@ class ObservabilityService:
             "type": "log",
             "level": "info",
             "source": "TaskManager",
+            "agent_id": event.payload.get("agent_id"),
             "message": f"📋 {event.type}: {event.payload.get('task_id')}",
             "details": event.payload,
         })

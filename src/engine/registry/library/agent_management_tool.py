@@ -2,6 +2,8 @@
 
 from typing import Any, Optional, Dict
 from engine.core.models import LLModel
+from engine.registry.library.filesystem_tools import CreateFileTool, ListDirectoryTool, ReadFileTool
+from engine.registry.library.system_tools import RunCommandTool
 from pydantic import Field
 from engine.registry.base_tool import BaseTool
 from engine.core.agent_instance_manager import get_agent_manager, AgentConfig
@@ -99,6 +101,13 @@ class CreateAgentTool(BaseTool):
             )
             
             registry = ToolRegistry()
+            registry.register(self)
+            registry.register(ReadFileTool())
+            registry.register(ListDirectoryTool())
+            registry.register(CreateFileTool(file_path='.', content='..'))
+
+            # Register System/Command Tools
+            registry.register(RunCommandTool(command='ls'))
             
             created_id = manager.create_and_register_agent(
                 agent_id=agent_id,

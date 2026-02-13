@@ -12,6 +12,7 @@ from engine.core.provide import get_provider
 logger = logging.getLogger(__name__)
 
 def create_agent(
+    agent_id : str,
     config: AgentConfig,
     registry: Optional[ToolRegistry] = None,
     memory: Optional[Memory] = None
@@ -37,6 +38,7 @@ def create_agent(
     
     try:
         agent = Agent(
+            agent_id=agent_id,
             config=config,
             registry=registry,
             memory=memory

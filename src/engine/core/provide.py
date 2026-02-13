@@ -17,7 +17,7 @@ def get_provider(name: str, **kwargs) -> Optional[BaseProvider]:
     """Get provider instance by name with configuration."""
     try:
         provider_class = PROVIDER_REGISTRY[name]
-        return provider_class(model_id = kwargs.get('model'))
+        return provider_class(model_id = kwargs.get('model'), kwargs=kwargs)
     except KeyError:
         logger.error(f"Unsupported provider: {name}")
         return None

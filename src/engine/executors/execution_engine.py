@@ -50,6 +50,7 @@ class ExecutionEngine:
                 self.event_bus.publish(Event(
                     type=EventType.TOOL_EXECUTION_STARTED,
                     payload={
+                        "agent_id": call.agent_id,
                         "tool_call_id": call.id,
                         "tool_name": call.name,
                         "arguments": call.arguments
@@ -87,6 +88,7 @@ class ExecutionEngine:
                 self.event_bus.publish(Event(
                     type=EventType.TOOL_EXECUTION_COMPLETED,
                     payload={
+                        "agent_id": call.agent_id,
                         "tool_call_id": call.id,
                         "tool_name": call.name,
                         "result": str(result)[:1000] # Truncate for log safety
@@ -107,6 +109,7 @@ class ExecutionEngine:
                 self.event_bus.publish(Event(
                     type=EventType.TOOL_EXECUTION_FAILED,
                     payload={
+                        "agent_id": call.agent_id,
                         "tool_call_id": call.id,
                         "tool_name": call.name,
                         "error": error_msg

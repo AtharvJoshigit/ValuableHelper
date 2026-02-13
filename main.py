@@ -117,7 +117,21 @@ class ApplicationManager:
             
             # 4. Instantiate Services
             self.bot_service = TelegramBotService(token)
-            self.main_agent = MainAgent(self.bot_service)
+
+            config = {
+                'top_k':0.5,
+                'top_p':0.5,
+                'max_tokens' : 3000,
+                'temperature' : 0.5,
+                "model_id": "gemini-3-flash-preview",
+                "provider": "google",
+                "max_steps": 25,
+                "additional_params" : {
+                    "include_thoughts": False,
+                }
+            }
+
+            self.main_agent = MainAgent(self.bot_service, config)
             self.logger.info("✅ Services instantiated")
             
             # 5. Setup FastAPI Server (Optional - commented out by default)
