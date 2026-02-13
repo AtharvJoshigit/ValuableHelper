@@ -3,31 +3,114 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chat Interface</title>
+    <title>ValH · Neural Assistant</title>
     <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/default.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
-<body>
-    <div class="chat-container">
-        <header>
-            <div class="face">
-                <div class="eye left">
-                    <div class="pupil"></div>
+<body data-state="IDLE">
+    
+    <div class="layout">
+        
+        <!-- LEFT: Tool Execution Monitor -->
+        <aside class="tools-panel">
+            <div class="panel-header">
+                <h2>Tool Activity</h2>
+                <div class="header-actions">
+                    <!-- EXTENSION POINT: Add more controls here (e.g., pause, settings) -->
+                    <button class="icon-btn" id="clear-tools" title="Clear history">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                    </button>
                 </div>
-                <div class="eye right">
-                    <div class="pupil"></div>
-                </div>
-                <div class="mouth"></div>
             </div>
-        </header>
-        <main id="chat-log"></main>
-        <form id="message-form">
-            <textarea id="message-input" placeholder="Type your message..."></textarea>
-            <button type="submit">Send</button>
-        </form>
+            
+            <!-- Stats Overview -->
+            <div class="stats">
+                <div class="stat-item">
+                    <span class="stat-value" id="total-ops">0</span>
+                    <span class="stat-label">Total</span>
+                </div>
+                <div class="stat-item success">
+                    <span class="stat-value" id="success-ops">0</span>
+                    <span class="stat-label">Success</span>
+                </div>
+                <div class="stat-item error">
+                    <span class="stat-value" id="error-ops">0</span>
+                    <span class="stat-label">Failed</span>
+                </div>
+            </div>
+            
+            <!-- Tool Timeline -->
+            <div id="tools-timeline">
+                <!-- EXTENSION POINT: Tool execution cards will be injected here -->
+                <div class="empty-state">
+                    <p>Waiting for activity...</p>
+                </div>
+            </div>
+        </aside>
+
+        <!-- RIGHT: Conversation Interface -->
+        <main class="conversation-area">
+            
+            <!-- Header with Natural Mascot -->
+            <header class="app-header">
+                <div class="branding">
+                    <div class="logo">
+                        <h1>ValH</h1>
+                    </div>
+                    <!-- EXTENSION POINT: Natural mascot with different states -->
+                    <div class="mascot" id="mascot">
+                        <div class="mascot-face">
+                            <div class="eyes">
+                                <div class="eye left">
+                                    <div class="pupil"></div>
+                                </div>
+                                <div class="eye right">
+                                    <div class="pupil"></div>
+                                </div>
+                            </div>
+                            <div class="mouth"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="status-indicator">
+                    <div class="pulse-dot"></div>
+                    <span id="status-text">Listening</span>
+                </div>
+            </header>
+
+            <!-- Messages -->
+            <div id="messages-container">
+                <div id="messages">
+                    <!-- EXTENSION POINT: Messages will be appended here -->
+                    <div class="system-msg">System initialized · Ready for input</div>
+                </div>
+            </div>
+
+            <!-- Input -->
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <textarea 
+                        id="user-input" 
+                        placeholder="Ask me anything..." 
+                        rows="1"
+                        autocomplete="off"
+                        spellcheck="false"></textarea>
+                    <button id="send-btn" aria-label="Send message">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </main>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
     <script src="script.js"></script>
 </body>
 </html>

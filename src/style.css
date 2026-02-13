@@ -1,224 +1,779 @@
-/* General Styles */
+/* ============================================
+   MINIMALISTIC NATURAL DESIGN
+   Clean, focused, and lively
+   ============================================ */
+
+   :root {
+    /* Neutral Base - soft and natural */
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --border: #e5e5e5;
+    --border-subtle: #f0f0f0;
+    
+    /* Text - readable hierarchy */
+    --text-primary: #1a1a1a;
+    --text-secondary: #666666;
+    --text-tertiary: #999999;
+    
+    /* Accent - calm and purposeful */
+    --accent: #2563eb;
+    --accent-light: #dbeafe;
+    --accent-subtle: #eff6ff;
+    
+    /* States - natural colors */
+    --success: #16a34a;
+    --success-light: #dcfce7;
+    --error: #dc2626;
+    --error-light: #fee2e2;
+    --warning: #ea580c;
+    --warning-light: #ffedd5;
+    --thinking: #7c3aed;
+    --thinking-light: #ede9fe;
+    
+    /* Typography */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Menlo', monospace;
+    
+    /* Spacing */
+    --radius: 8px;
+    --radius-sm: 4px;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
+}
+
+/* Dark mode - EXTENSION POINT: Add dark theme toggle */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #0f0f0f;
+        --surface: #1a1a1a;
+        --border: #2a2a2a;
+        --border-subtle: #222222;
+        --text-primary: #f5f5f5;
+        --text-secondary: #a3a3a3;
+        --text-tertiary: #666666;
+        --accent: #3b82f6;
+        --accent-light: #1e3a8a;
+        --accent-subtle: #172554;
+        --success-light: #14532d;
+        --error-light: #7f1d1d;
+        --warning-light: #7c2d12;
+        --thinking-light: #4c1d95;
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+    }
+}
+
 * {
     box-sizing: border-box;
     margin: 0;
     padding: 0;
 }
 
-html, body {
-    height: 100%;
-}
-
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background-color: #121212;
-    color: #e0e0e0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-
-/* Chat Container */
-.chat-container {
-    display: flex;
-    flex-direction: column;
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--text-primary);
     height: 100vh;
-    width: 100%;
-    margin: 0 auto;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
-/* Header */
-header {
+/* ============================================
+   LAYOUT
+   ============================================ */
+
+.layout {
+    display: flex;
+    height: 100vh;
+}
+
+/* ============================================
+   TOOLS PANEL - Focus on execution
+   ============================================ */
+
+.tools-panel {
+    width: 360px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+}
+
+.panel-header {
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.panel-header h2 {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+}
+
+.header-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* EXTENSION POINT: Style additional control buttons */
+.icon-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
     display: flex;
     align-items: center;
-    padding: 10px 20px;
-    background-color: #1e1e1e;
-    border-bottom: 1px solid #2a2a2a;
-    width: 100%;
-    z-index: 100;
+    justify-content: center;
+    transition: all 0.15s ease;
 }
 
-/* Face Logo */
-.face {
-    width: 50px;
-    height: 50px;
+.icon-btn:hover {
+    background: var(--border-subtle);
+    color: var(--text-secondary);
+}
+
+/* Stats Overview */
+.stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+/* EXTENSION POINT: Add more stat items (e.g., avg duration) */
+.stat-item {
+    text-align: center;
+}
+
+.stat-value {
+    display: block;
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.stat-item.success .stat-value {
+    color: var(--success);
+}
+
+.stat-item.error .stat-value {
+    color: var(--error);
+}
+
+.stat-label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+    margin-top: 0.25rem;
+}
+
+/* Tool Timeline */
+#tools-timeline {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
+}
+
+.empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 200px;
+    color: var(--text-tertiary);
+    font-size: 0.875rem;
+}
+
+/* Tool Execution Card - EXTENSION POINT: Customize card appearance */
+.tool-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+    transition: all 0.2s ease;
+    /* Subtle entrance animation */
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.tool-card.active {
+    border-color: var(--warning);
+    background: var(--warning-light);
+}
+
+.tool-card.success {
+    border-color: var(--success);
+    background: var(--success-light);
+}
+
+.tool-card.error {
+    border-color: var(--error);
+    background: var(--error-light);
+}
+
+.tool-header {
+    padding: 0.875rem 1rem;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.tool-header:hover {
+    background: rgba(0, 0, 0, 0.02);
+}
+
+@media (prefers-color-scheme: dark) {
+    .tool-header:hover {
+        background: rgba(255, 255, 255, 0.02);
+    }
+}
+
+.tool-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.tool-name {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+
+.tool-time {
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+}
+
+.tool-duration {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    background: var(--border-subtle);
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+}
+
+.expand-icon {
+    width: 20px;
+    height: 20px;
+    color: var(--text-tertiary);
+    transition: transform 0.2s ease;
+    margin-left: 0.5rem;
+}
+
+.tool-card.expanded .expand-icon {
+    transform: rotate(180deg);
+}
+
+/* Tool Details - EXTENSION POINT: Add more detail sections */
+.tool-details {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+}
+
+.tool-card.expanded .tool-details {
+    max-height: 600px;
+}
+
+.detail-section {
+    padding: 0.875rem 1rem;
+    border-top: 1px solid var(--border);
+}
+
+.detail-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+    display: block;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.detail-content {
+    font-size: 0.8125rem;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.75rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    line-height: 1.5;
+}
+
+/* ============================================
+   CONVERSATION AREA
+   ============================================ */
+
+.conversation-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+}
+
+/* Header with Natural Mascot */
+.app-header {
+    padding: 1.25rem 2rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.branding {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+}
+
+.logo h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+}
+
+/* ============================================
+   NATURAL MASCOT - EXTENSION POINT
+   Lively, organic animations based on state
+   ============================================ */
+
+.mascot {
     position: relative;
-    font-size: 8px; /* Use ems for scaling children */
+    width: 64px;
+    height: 56px;
+}
+
+.mascot-face {
+    width: 64px;
+    height: 48px;
+    background: var(--surface);
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all 0.3s ease;
+    box-shadow: var(--shadow);
+}
+
+/* Natural eye structure */
+.eyes {
+    display: flex;
+    gap: 14px;
 }
 
 .eye {
-    width: 2.5em; /* 2.5 * 8 = 20px */
-    height: 3.5em; /* 3.5 * 8 = 28px */
-    background-color: white;
-    border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
-    position: absolute;
-    top: 35%;
-    border: 1px solid #333;
-    overflow: hidden;
+    width: 8px;
+    height: 8px;
+    background: var(--text-primary);
+    border-radius: 50%;
+    position: relative;
+    /* Natural blink animation */
+    animation: naturalBlink 4s ease-in-out infinite;
 }
 
-.eye.left { left: 15%; }
-.eye.right { right: 15%; }
-
+/* Pupil for looking around - EXTENSION POINT */
 .pupil {
-    width: 1em;   /* 1 * 8 = 8px */
-    height: 1em;  /* 1 * 8 = 8px */
-    background-color: #333;
+    width: 4px;
+    height: 4px;
+    background: var(--surface);
     border-radius: 50%;
     position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    transition: transform 0.3s ease-in-out;
+    top: 2px;
+    left: 2px;
+    transition: all 0.3s ease;
 }
 
-.pupil::after {
-    content: '';
-    position: absolute;
-    top: 20%;
-    left: 20%;
-    width: 0.25em;
-    height: 0.25em;
-    background-color: white;
-    border-radius: 50%;
-    opacity: 0.9;
+.mouth {
+    width: 12px;
+    height: 2px;
+    background: var(--text-tertiary);
+    border-radius: 2px;
+    transition: all 0.2s ease;
 }
 
-.mouth { display: none; } /* Hide mouth for small logo */
+/* ============================================
+   STATE-BASED ANIMATIONS - Natural & Smooth
+   ============================================ */
 
-.eye.blink { animation: blink 0.4s ease-in-out; }
-@keyframes blink {
-    0%, 100% { transform: scaleY(1); }
-    50% { transform: scaleY(0.1); }
-}
-
-/* Thinking Animation */
-.face.thinking {
-    animation: glow 1.5s infinite alternate;
-}
-@keyframes glow {
-    from {
-        box-shadow: 0 0 5px #00aaff, 0 0 10px #00aaff, 0 0 15px #00aaff;
+/* IDLE: Calm, occasional blinks */
+@keyframes naturalBlink {
+    0%, 94%, 100% {
+        transform: scaleY(1);
     }
-    to {
-        box-shadow: 0 0 10px #00aaff, 0 0 20px #00aaff, 0 0 30px #00aaff;
+    95%, 97% {
+        transform: scaleY(0.1);
     }
 }
 
+/* THINKING: Eyes wander, curious expression */
+body[data-state="THINKING"] .mascot-face {
+    border-color: var(--thinking);
+    animation: gentleBob 2s ease-in-out infinite;
+}
 
-/* Chat Log */
-#chat-log {
-    flex-grow: 1;
+body[data-state="THINKING"] .eye {
+    animation: naturalBlink 2s ease-in-out infinite;
+}
+
+body[data-state="THINKING"] .pupil {
+    animation: lookAround 3s ease-in-out infinite;
+}
+
+body[data-state="THINKING"] .mouth {
+    width: 8px;
+    border-radius: 0 0 4px 4px;
+}
+
+@keyframes gentleBob {
+    0%, 100% {
+        transform: translateY(0);
+    }
+    50% {
+        transform: translateY(-4px);
+    }
+}
+
+/* EXTENSION POINT: Make pupils look in different directions */
+@keyframes lookAround {
+    0%, 100% {
+        transform: translate(2px, 2px);
+    }
+    25% {
+        transform: translate(3px, 1px);
+    }
+    50% {
+        transform: translate(1px, 3px);
+    }
+    75% {
+        transform: translate(3px, 3px);
+    }
+}
+
+/* WORKING: Active, focused, slight movement */
+body[data-state="WORKING"] .mascot-face {
+    border-color: var(--warning);
+    animation: focusedWork 0.8s ease-in-out infinite;
+}
+
+body[data-state="WORKING"] .eye {
+    animation: rapidBlink 1.2s ease-in-out infinite;
+}
+
+body[data-state="WORKING"] .mouth {
+    width: 10px;
+    height: 3px;
+    background: var(--warning);
+    animation: activeWork 0.5s ease-in-out infinite;
+}
+
+@keyframes focusedWork {
+    0%, 100% {
+        transform: translateX(0);
+    }
+    50% {
+        transform: translateX(1px);
+    }
+}
+
+@keyframes rapidBlink {
+    0%, 40%, 100% {
+        transform: scaleY(1);
+    }
+    45%, 50% {
+        transform: scaleY(0.1);
+    }
+}
+
+@keyframes activeWork {
+    0%, 100% {
+        transform: scaleX(1);
+    }
+    50% {
+        transform: scaleX(0.8);
+    }
+}
+
+/* Status Indicator */
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.pulse-dot {
+    width: 8px;
+    height: 8px;
+    background: var(--success);
+    border-radius: 50%;
+    animation: gentlePulse 2s ease-in-out infinite;
+}
+
+body[data-state="THINKING"] .pulse-dot {
+    background: var(--thinking);
+}
+
+body[data-state="WORKING"] .pulse-dot {
+    background: var(--warning);
+    animation: activePulse 1s ease-in-out infinite;
+}
+
+@keyframes gentlePulse {
+    0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.6;
+        transform: scale(0.9);
+    }
+}
+
+@keyframes activePulse {
+    0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.5;
+        transform: scale(1.1);
+    }
+}
+
+#status-text {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+/* ============================================
+   MESSAGES - EXTENSION POINT: Add message types
+   ============================================ */
+
+#messages-container {
+    flex: 1;
     overflow-y: auto;
-    padding: 20px;
+    padding: 2rem;
+}
+
+#messages {
+    max-width: 800px;
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
-    gap: 15px;
+    gap: 1.5rem;
 }
 
-.message {
-    padding: 12px 18px;
-    border-radius: 18px;
-    max-width: 80%;
-    line-height: 1.5;
+/* System Messages */
+.system-msg {
+    text-align: center;
+    font-size: 0.8125rem;
+    color: var(--text-tertiary);
+    padding: 0.5rem 0;
 }
 
-.user-message {
-    background-color: #333333;
+/* User Messages */
+.msg-user {
     align-self: flex-end;
-    border-bottom-right-radius: 4px;
+    max-width: 70%;
+    animation: fadeIn 0.2s ease-out;
 }
 
-.assistant-message {
-    background-color: #003344;
-    align-self: flex-start;
-    border-bottom-left-radius: 4px;
-}
-
-/* Code Blocks */
-pre {
-    background-color: #1e1e1e;
-    border: 1px solid #2a2a2a;
-    border-radius: 8px;
-    padding: 16px;
-    overflow-x: auto;
-    font-size: 0.9em;
-    margin: 10px 0;
-}
-
-code {
-    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
-}
-
-/* Input Form */
-#message-form {
-    display: flex;
-    padding: 10px 20px;
-    border-top: 1px solid #2a2a2a;
-    background-color: #1e1e1e;
-}
-
-#message-input {
-    flex-grow: 1;
-    background-color: #2c2c2c;
-    color: #e0e0e0;
-    border: none;
-    border-radius: 15px;
-    padding: 10px 15px;
-    font-size: 1rem;
-    line-height: 1.5;
-    resize: none;
-    max-height: 200px;
-    overflow-y: auto;
-}
-
-#message-input:focus {
-    outline: none;
-    box-shadow: 0 0 0 2px #007acc;
-}
-
-#message-form button {
-    background-color: #007acc;
+.msg-user .msg-content {
+    background: var(--accent);
     color: white;
+    padding: 0.875rem 1.125rem;
+    border-radius: var(--radius);
+    font-size: 0.9375rem;
+    line-height: 1.5;
+    box-shadow: var(--shadow);
+}
+
+/* Assistant Messages */
+.msg-assistant {
+    align-self: flex-start;
+    max-width: 80%;
+    animation: fadeIn 0.2s ease-out;
+}
+
+.msg-assistant .msg-content {
+    color: var(--text-primary);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+}
+
+.msg-content strong {
+    font-weight: 600;
+}
+
+.msg-content code {
+    background: var(--border-subtle);
+    padding: 0.15rem 0.4rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ============================================
+   INPUT AREA
+   ============================================ */
+
+.input-area {
+    padding: 1.5rem 2rem;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+}
+
+.input-wrapper {
+    max-width: 800px;
+    margin: 0 auto;
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-end;
+}
+
+/* EXTENSION POINT: Add file upload, voice input buttons */
+#user-input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    padding: 0.875rem 1rem;
+    border-radius: var(--radius);
+    outline: none;
+    resize: none;
+    max-height: 120px;
+    transition: all 0.15s ease;
+    line-height: 1.5;
+}
+
+#user-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+#user-input::placeholder {
+    color: var(--text-tertiary);
+}
+
+#send-btn {
+    width: 44px;
+    height: 44px;
+    background: var(--accent);
     border: none;
-    padding: 10px 20px;
-    border-radius: 15px;
-    margin-left: 10px;
+    border-radius: var(--radius);
+    color: white;
     cursor: pointer;
-    font-size: 1rem;
-    transition: background-color 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
 }
 
-#message-form button:hover {
-    background-color: #005f99;
+#send-btn:hover {
+    background: var(--text-primary);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
 }
 
-/* Custom Scrollbar */
+#send-btn:active {
+    transform: translateY(0);
+}
+
+/* ============================================
+   SCROLLBARS - Clean & minimal
+   ============================================ */
+
 ::-webkit-scrollbar {
     width: 8px;
+    height: 8px;
 }
+
 ::-webkit-scrollbar-track {
-    background: #1e1e1e;
+    background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
-    background: #444;
+    background: var(--border);
     border-radius: 4px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
-    background: #555;
+    background: var(--text-tertiary);
 }
 
-/* Responsive Design */
-@media (max-width: 600px) {
-    .message {
-        max-width: 90%;
-    }
+/* ============================================
+   RESPONSIVE - EXTENSION POINT: Mobile layout
+   ============================================ */
 
-    #chat-log {
-        padding: 10px;
+@media (max-width: 768px) {
+    .layout {
+        flex-direction: column;
     }
-
-    #message-form {
-        padding: 10px;
+    
+    .tools-panel {
+        width: 100%;
+        max-height: 35vh;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+    
+    .app-header {
+        padding: 1rem 1.5rem;
+    }
+    
+    #messages-container {
+        padding: 1.5rem;
+    }
+    
+    .input-area {
+        padding: 1rem 1.5rem;
     }
 }

@@ -5,9 +5,10 @@ import uuid
 from typing import List, Optional
 from datetime import datetime
 from tempfile import NamedTemporaryFile
+
+from app.app_context import get_app_context
 from src.domain.task import Task, TaskStatus, TaskPriority
 from src.domain.event import Event, EventType
-from src.infrastructure.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ class TaskStore:
     def __init__(self, storage_path: str = "tasks.json"):
         self.storage_path = storage_path
         self._tasks: List[Task] = []
-        self._event_bus = EventBus()
+        self._event_bus = get_app_context().event_bus
         self._load()
 
     def _load(self):

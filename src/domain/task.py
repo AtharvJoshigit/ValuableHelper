@@ -36,6 +36,10 @@ class Task(BaseModel):
     tags: List[str] = Field(default_factory=list)
     assigned_to: Optional[str] = None
     
+    # New Control Fields
+    requires_review: bool = Field(default=True, description="Whether this task needs approval from the PlannerAgent after completion")
+    review_feedback: Optional[str] = Field(None, description="Feedback from the PlannerAgent if the task was not approved")
+    
     # Flexible context for agents
     context: Dict[str, Any] = Field(default_factory=dict)
     

@@ -1,6 +1,8 @@
+from agents.agent_id import AGENT_ID
 from engine.providers.base_provider import BaseProvider
 from engine.providers.google.provider import GoogleProvider
 from engine.registry.library.filesystem_tools import ListDirectoryTool, ReadFileTool
+from infrastructure.singleton import Singleton
 from .base_agent import BaseAgent
 from .coder_agent import CoderAgent
 from .system_operator_agent import SystemOperatorAgent
@@ -10,10 +12,18 @@ from services.task_store import TaskStore
 from engine.registry.tool_registry import ToolRegistry
 
 class PlanManagerAgent(BaseAgent):
-    def __init__(self, task_store: TaskStore, config: dict = {}):
-        super().__init__(config)
-        self.task_store = task_store
-        self.max_steps = config.get('max_steps', 20)
+    def __init__(self, config: dict = None):
+        default_config = {
+            "model_id": "gemini-2.5-pro",
+            "provider": "google",
+            "max_steps": 25,
+            "temperature": 0.3,
+            "sensitive_tool_names": {}
+        }
+        if config:
+            default_config.update(config)
+        super().__init__(default_config)
+        self.task_store = Singleton.get_task_store()
 
     def _get_provider(self) -> BaseProvider:
         # Using a high-performance model for coding tasks
@@ -26,36 +36,22 @@ class PlanManagerAgent(BaseAgent):
         registry.register(ReadFileTool())
         # 1. The Core Memory: Task Store
         # We pass the shared store instance so everyone sees the same tasks
-        registry.register(AddTaskTool(self.task_store))
-        registry.register(UpdateTaskStatusTool(self.task_store))
-        registry.register(ListTasksTool(self.task_store))
-        registry.register(AddTaskDependencyTool(self.task_store))
-        registry.register(RemoveTaskDependencyTool(self.task_store))
-        registry.register(UpdateTaskTool(self.task_store))
-        registry.register(DeleteTaskTool(self.task_store))
-        registry.register(ListSubtasksTool(self.task_store))
-        registry.register(GetTaskTool(self.task_store))
+        registry.register(AddTaskTool())
+        registry.register(UpdateTaskStatusTool())
+        registry.register(ListTasksTool())
+        registry.register(AddTaskDependencyTool())
+        registry.register(RemoveTaskDependencyTool())
+        registry.register(UpdateTaskTool())
+        registry.register(DeleteTaskTool())
+        registry.register(ListSubtasksTool())
+        registry.register(GetTaskTool())
 
-        
-        # 2. The Hands: System Operator
-        operator_agent = SystemOperatorAgent().start()
-        registry.register(AgentWrapper(
-            agent=operator_agent,
-            name="system_operator",
-            description="Delegate file operations and shell commands to this agent."
-        ))
-
-        # 3. The Brains: Coder Agent
-        coder_agent = CoderAgent().start()
-        registry.register(AgentWrapper(
-            agent=coder_agent,
-            name="coder_agent",
-            description="Delegate code writing, refactoring, and testing to this agent."
-        ))
-        
+    
         return registry
 
     def start(self):
         return self.create(
-            system_prompt_file=["my_agents/plan_manager_prompt.md", "my_agents/memory.md", "tools_call.md"],
+            system_prompt_file=["my_agents/plan_manager_prompt.md", "tools_call.md"],
+            agent_id=AGENT_ID.FIXED_PLANER_AGENT.value,
+            set_as_current=False
         )

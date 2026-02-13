@@ -1,5 +1,6 @@
 ## Tool Call Protocol
 
+**Tool Manifest** -> me\knowledge\tools_manifest.md
 ### Execution Rules
 
 **Schema Compliance:**

@@ -21,12 +21,14 @@ class ToolCall(BaseModel):
     model_config = ConfigDict(extra='allow')
     id: str
     name: str
+    agent_id: Optional[str] = None
     # thought: Optional[bool] = None # for google
     arguments: Dict[str, Any]
 
 class ToolResult(BaseModel):
     model_config = ConfigDict(extra='allow')
     tool_call_id: str
+    agent_id: Optional[str] = None
     result: Any
     name: str
     error: Optional[str] = None
