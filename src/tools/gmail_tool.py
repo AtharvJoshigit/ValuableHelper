@@ -51,9 +51,9 @@ class GmailDownloadAttachmentTool(BaseTool):
     """
     name: str = "gmail_download_attachment"
     description: str = "Download an attachment from an email using message_id and attachment_id."
-    message_id: str = Field(Defalut='N/A', description="The ID of the message.")
-    attachment_id: str = Field(Defalut='N/A', description="The ID of the attachment.")
-    filename: str = Field(Defalut='N/A', description="The name to save the file as.")
+    message_id: str = Field('N/A', description="The ID of the message.")
+    attachment_id: str = Field('N/A', description="The ID of the attachment.")
+    filename: str = Field('N/A', description="The name to save the file as.")
 
     def execute(self, **kwargs) -> Any:
         message_id = kwargs.get("message_id")

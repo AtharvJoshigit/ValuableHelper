@@ -1,3 +1,4 @@
+import argparse
 import sys
 import os
 import logging
@@ -5,8 +6,12 @@ import asyncio
 import signal
 from typing import Optional
 from app.app_context import AppContext, set_app_context
+from services.observability_service import ObservabilityService
 import uvicorn
 from dotenv import load_dotenv
+
+
+RUN_BOT_ONLY = "--bot" in sys.argv
 
 # Ensure 'src' is in the python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
@@ -18,47 +23,66 @@ from agents.main_agent import MainAgent
 from engine.core.provide import auto_register_providers
 from server import app  # Import FastAPI app
 
+
+
+class AFCToDebugFilter(logging.Filter):
+    def filter(self, record):
+        if "AFC" in record.getMessage():
+            record.levelno = logging.DEBUG
+            record.levelname = "DEBUG"
+        return True
+
 # --- Setup Logging ---
 LOG_FILE = "valh.log"
 
 def setup_logging():
     """Configure logging for the application"""
     logging.root.handlers.clear()
-    logging.basicConfig(
-        level=logging.INFO,
-        force=True)
+    
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    
-    # Silence noise from external libraries
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("root").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("telegram").setLevel(logging.WARNING)
-    logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
-    
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
-    # File Handler
-    file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+
+    for noisy in (
+        "httpx", "httpcore", "telegram", "httpcore.http11"
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
     file_handler.setFormatter(formatter)
+    file_handler.addFilter(AFCToDebugFilter())
     logger.addHandler(file_handler)
-    
-    # Console Handler
+
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(AFCToDebugFilter())
     logger.addHandler(console_handler)
-    
+
     return logger
+
+# --- CLI ARGUMENTS ---
+def parse_args():
+    parser = argparse.ArgumentParser(description="ValH Application Runner")
+    parser.add_argument(
+        "--bot",
+        action="store_true",
+        help="Run in bot-only mode (disable UI services)",
+    )
+    return parser.parse_args()
 
 
 class ApplicationManager:
     """Manages the lifecycle of all application components"""
     
-    def __init__(self):
+    def __init__(self, bot_only: bool = False):
         self.logger = logging.getLogger("ValuableHelper")
+        self.bot_only = bot_only
         self.app_context: Optional[AppContext] = None
         self.plan_director: Optional[PlanDirector] = None
+        self.obs_service: Optional[ObservabilityService] = None
         self.bot_service: Optional[TelegramBotService] = None
         self.main_agent: Optional[MainAgent] = None
         self.shutdown_event = asyncio.Event()
@@ -78,10 +102,13 @@ class ApplicationManager:
             auto_register_providers()
             self.logger.info("✅ Infrastructure initialized")
             
-            # 2. Initialize Plan Director
+            # 2. Initialize Plan Director & Observability
             self.plan_director = PlanDirector()
             self.plan_director.ensure_started()
-            self.logger.info("✅ Plan Director initialized")
+            if not self.bot_only:
+                self.obs_service = ObservabilityService()
+                self.obs_service.start()
+            self.logger.info("✅ Plan Director & Observability initialized")
             
             # 3. Configuration
             token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -94,15 +121,16 @@ class ApplicationManager:
             self.logger.info("✅ Services instantiated")
             
             # 5. Setup FastAPI Server (Optional - commented out by default)
-            config = uvicorn.Config(
-                app, 
-                host="0.0.0.0", 
-                port=8000, 
-                log_level="error",
-                access_log=False
-            )
-            self.server = uvicorn.Server(config)
-            self.logger.info("✅ FastAPI server configured")
+            if not self.bot_only:
+                config = uvicorn.Config(
+                    app,
+                    host="0.0.0.0",
+                    port=8000,
+                    log_level="error",
+                    access_log=False,
+                )
+                self.server = uvicorn.Server(config)
+                self.logger.info("✅ FastAPI server configured")
             
             self.logger.info("✅ Application initialization complete")
             
@@ -123,12 +151,11 @@ class ApplicationManager:
             self.logger.info("✅ Main Agent started")
             
             # 2. Start FastAPI Server (Optional)
-            if self.server:
+            if self.server and not self.bot_only:
                 self.server_task = asyncio.create_task(
-                    self.server.serve(),
-                    name="fastapi_server"
+                    self.server.serve(), name="fastapi_server"
                 )
-                self.logger.info("🎭 Interface running at http://localhost:8000")
+                self.logger.info("🎭 UI running at http://localhost:8000")
             
             # 3. Start Telegram Bot (runs in its own task)
             self.bot_task = asyncio.create_task(
@@ -167,7 +194,7 @@ class ApplicationManager:
         shutdown_tasks = []
         
         # 1. Stop FastAPI Server
-        if self.server:
+        if self.server and not self.bot_only:
             self.logger.info("Stopping FastAPI server...")
             self.server.should_exit = True
             if self.server_task and not self.server_task.done():
@@ -220,12 +247,12 @@ class ApplicationManager:
             self.logger.error(f"Error cancelling {name}: {e}", exc_info=True)
 
 
-async def main_async():
+async def main_async(bot_only: bool):
     """
     Async entry point for the application with proper signal handling
     """
     logger = logging.getLogger("ValuableHelper")
-    app_manager = ApplicationManager()
+    app_manager = ApplicationManager(bot_only=bot_only)
     
     # Setup signal handlers for graceful shutdown
     def signal_handler(sig):
@@ -272,7 +299,7 @@ def main():
     """Entry point for the application"""
     # Load environment variables
     load_dotenv(override=True)
-    
+    args = parse_args()
     # Setup logging
     setup_logging()
     logger = logging.getLogger("ValuableHelper")
@@ -287,7 +314,7 @@ def main():
         logger.info("=" * 60)
         
         # Run the async application
-        asyncio.run(main_async())
+        asyncio.run(main_async(bot_only=args.bot))
         
     except KeyboardInterrupt:
         # Expected exit on Ctrl+C - already handled in main_async

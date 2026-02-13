@@ -1,21 +1,26 @@
 import asyncio
 import logging
-from engine.registry.tool_registry import tool
+from engine.registry.base_tool import BaseTool
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
-class DelayedGreetingTool:
-    @tool
-    async def schedule_greeting(self, delay_seconds: int = 180):
-        \"\"\"
-        Schedules a background task to print a greeting after a delay.
-        \"\"\"
+class DelayedGreetingTool(BaseTool):
+    """
+    Schedules a background task to print a greeting after a delay.
+    """
+    name: str = "schedule_greeting"
+    description: str = "Schedules a 'Hi' message after a specified delay."
+    delay_seconds: int = Field(180, description="Delay in seconds.")
+
+    async def execute(self, **kwargs) -> str:
+        delay = kwargs.get("delay_seconds", 180)
         async def delayed_hi():
-            await asyncio.sleep(delay_seconds)
-            # This will appear in the logs/console since we don't have a 
-            # direct "push" to the user message history without a bot session
-            logger.info(f"--- [CRON GREETING] --- Hi Boss! It has been {delay_seconds} seconds.")
-            print(f"\\n--- [CRON GREETING] --- Hi Boss! It has been {delay_seconds} seconds.\\n")
+            await asyncio.sleep(delay)
+            # In a real scenario, we'd use the telegram bot to send this.
+            # For this test, we log it and print it.
+            print(f"\n--- [VALH] --- Hi Atharv! 3 minutes are up. \n")
+            logger.info("Delayed greeting executed.")
 
         asyncio.create_task(delayed_hi())
-        return f"Greeting scheduled in {delay_seconds} seconds. Keep an eye on the logs or console."
+        return f"Clock started. I'll drop a 'Hi' in the console in {delay} seconds."

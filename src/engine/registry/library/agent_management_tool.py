@@ -23,11 +23,11 @@ class CreateAgentTool(BaseTool):
         "The agent is registered and can be switched to later."
     )
     
-    agent_id: str = Field(
+    agent_id: str = Field('main_agent_child',
         description="Unique identifier for the new agent (e.g., 'research_agent', 'code_assistant')"
     )
     
-    model: str = Field(
+    model: str = Field('gemini-2.5-pro',
         description=(
             "Model to use for this agent. Options: "
             "gemini-3-pro-preview, gemini-3-flash-preview, "
@@ -143,7 +143,7 @@ class SwitchAgentTool(BaseTool):
         "Use this to switch between specialized agents (e.g., from general assistant to code assistant)."
     )
     
-    agent_id: str = Field(
+    agent_id: str = Field('n/a',
         description="ID of the agent to switch to"
     )
 
@@ -228,131 +228,89 @@ class ListAgentsTool(BaseTool):
             }
 
 
-class SwitchModelTool(BaseTool):
-    """
-    Switches the current agent's model while preserving memory.
-    """
-    name: str = "switch_model"
-    description: str = (
-        "Switches the AI model being used by the current agent while preserving conversation history. "
-        "Use when you need different capabilities (faster, smarter, specialized)."
-    )
-    
-    model: str = Field(
-        description="Model to switch to (gemini-3-pro-preview, gemini-2.5-flash, etc.)"
-    )
-    
-    preserve_memory: bool = Field(
-        default=True,
-        description="Whether to preserve conversation history"
-    )
-
-    def execute(self, **kwargs: Any) -> Any:
-        """Switch model for current agent."""
-        model = kwargs.get("model", self.model)
-        preserve_memory = kwargs.get("preserve_memory", self.preserve_memory)
-        
-        try:
-            if isinstance(model, str):
-                try:
-                    model_enum = LLModel(model)
-                    model = model_enum.value
-                except ValueError:
-                    logger.info(f"Model '{model}' not in enum, using as-is")
-            
-            manager = get_agent_manager()
-            current_info = manager.get_agent_info()
-            
-            if not current_info:
-                return {
-                    "status": "error",
-                    "error": "No active agent found"
-                }
-            
-            if current_info["model"] == model:
-                return {
-                    "status": "success",
-                    "message": f"Already using model '{model}'",
-                    "model": model
-                }
-            
-            manager.switch_model(
-                new_model=model,
-                preserve_memory=preserve_memory
-            )
-            
-            new_info = manager.get_agent_info()
-            
-            return {
-                "status": "success",
-                "message": f"Switched from '{current_info['model']}' to '{model}'",
-                "previous_model": current_info["model"],
-                "new_model": model,
-                "memory_status": "preserved" if preserve_memory else "reset",
-                "conversation_length": new_info["memory_length"]
-            }
-        
-        except Exception as e:
-            logger.error(f"Error switching model: {e}")
-            return {
-                "status": "error",
-                "error": str(e)
-            }
-
-
 class UpdateAgentConfigTool(BaseTool):
     """
-    Updates configuration of the current agent.
+    Updates agent configuration parameters like temperature, max_steps, etc.
     """
     name: str = "update_agent_config"
     description: str = (
-        "Updates agent configuration like temperature, max_steps, or system prompt "
-        "while preserving conversation history."
+        "Updates the agent's configuration parameters such as temperature, max_steps, "
+        "or system prompt while preserving memory and conversation history."
     )
     
     temperature: Optional[float] = Field(
         default=None,
-        description="Temperature (0.0-2.0)"
+        description="Temperature for response randomness (0.0-2.0)"
     )
     
     max_steps: Optional[int] = Field(
         default=None,
-        description="Maximum reasoning steps"
+        description="Maximum number of reasoning steps"
     )
     
     system_prompt: Optional[str] = Field(
         default=None,
-        description="New system prompt"
+        description="New system prompt to set agent behavior"
+    )
+    
+    model: Optional[str] = Field(
+        default=None,
+        description="Model to switch to"
+    )
+    
+    agent_id: Optional[str] = Field(
+        default=None,
+        description="Specific agent ID to update (if None, updates current agent)"
     )
 
     def execute(self, **kwargs: Any) -> Any:
-        """Update agent configuration."""
+        """Execute configuration update."""
         try:
             manager = get_agent_manager()
             
             update_params = {}
-            for key in ['temperature', 'max_steps', 'system_prompt', 'model']:
-                if kwargs.get(key) is not None:
-                    update_params[key] = kwargs[key]
+            if kwargs.get("temperature") is not None:
+                update_params["temperature"] = kwargs["temperature"]
+            if kwargs.get("max_steps") is not None:
+                update_params["max_steps"] = kwargs["max_steps"]
+            if kwargs.get("system_prompt") is not None:
+                update_params["system_prompt"] = kwargs["system_prompt"]
+            if kwargs.get("model") is not None:
+                update_params["model"] = kwargs["model"]
             
             if not update_params:
                 return {
                     "status": "error",
-                    "error": "No parameters provided"
+                    "error": "No parameters provided for update"
                 }
             
-            manager.update_agent(**update_params)
-            info = manager.get_agent_info()
+            agent_id = kwargs.get("agent_id", self.agent_id)
+            
+            updated_agent_id = manager.update_agent(
+                agent_id=agent_id,
+                **update_params
+            )
+            
+            new_info = manager.get_agent_info(updated_agent_id)
             
             return {
                 "status": "success",
-                "message": "Configuration updated",
+                "message": "Agent configuration updated successfully",
+                "agent_id": updated_agent_id,
                 "updated_parameters": update_params,
                 "current_config": {
-                    "model": info["model"],
-                    "temperature": info["temperature"],
-                    "max_steps": info["max_steps"]
+                    "model": new_info["model"],
+                    "temperature": new_info["temperature"],
+                    "max_steps": new_info["max_steps"],
+                    "system_prompt": new_info["system_prompt"]
                 }
+            }
+        
+        except Exception as e:
+            logger.error(f"Error updating agent config: {e}")
+            return {
+                "status": "error",
+                "error": str(e)
             }
         
         except Exception as e:

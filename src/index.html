@@ -3,393 +3,114 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ValH // MULTI_FACE_CORE</title>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;500&display=swap');
-
-        :root {
-            --bg: #020205;
-            --core-cyan: #00f3ff;
-            --core-violet: #bd00ff;
-            --core-green: #00ff9d;
-            --core-red: #ff0055;
-            --dim: rgba(0, 243, 255, 0.1);
-            --font-main: 'JetBrains Mono', monospace;
-        }
-
-        body, html {
-            margin: 0; padding: 0;
-            width: 100%; height: 100%;
-            background-color: var(--bg);
-            color: var(--core-cyan);
-            font-family: var(--font-main);
-            overflow: hidden;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            perspective: 1200px;
-        }
-
-        /* --- BACKGROUND AMBIENCE --- */
-        .stars {
-            position: absolute;
-            width: 100%; height: 100%;
-            background: radial-gradient(circle at center, #0a0a1a 0%, #020205 100%);
-            z-index: 0;
-        }
-
-        .grid {
-            position: absolute;
-            width: 200%; height: 200%;
-            background-image: 
-                linear-gradient(var(--dim) 1px, transparent 1px),
-                linear-gradient(90deg, var(--dim) 1px, transparent 1px);
-            background-size: 50px 50px;
-            transform: rotateX(60deg) translateY(-20%);
-            opacity: 0.15;
-            z-index: 1;
-            animation: moveGrid 10s linear infinite;
-        }
-
-        @keyframes moveGrid {
-            from { transform: rotateX(60deg) translateY(0); }
-            to { transform: rotateX(60deg) translateY(50px); }
-        }
-
-        /* --- MODE SWITCH BUTTON --- */
-        .mode-switch {
-            position: fixed;
-            top: 100px; right: 40px;
-            z-index: 100;
-            background: rgba(0, 243, 255, 0.05);
-            border: 1px solid var(--dim);
-            color: var(--secondary);
-            padding: 10px 20px;
-            font-family: var(--font-main);
-            font-size: 0.6rem;
-            letter-spacing: 2px;
-            cursor: pointer;
-            transition: all 0.3s;
-            pointer-events: auto;
-            color: var(--core-cyan);
-        }
-        .mode-switch:hover { background: var(--core-cyan); color: var(--bg); box-shadow: 0 0 20px var(--core-cyan); border-color: var(--core-cyan); }
-
-        /* --- THE CORE WRAPPER --- */
-        #core-wrap {
-            position: relative;
-            width: 600px; height: 600px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 10;
-            transition: transform 0.1s ease-out;
-            transform-style: preserve-3d;
-        }
-
-        /* --- FACE 1: HEAVY NEURAL CORE (The Prism) --- */
-        .neural-core {
-            position: absolute;
-            width: 100%; height: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transform-style: preserve-3d;
-            transition: opacity 0.5s, transform 0.5s;
-        }
-
-        .core-heart {
-            position: absolute;
-            width: 120px; height: 120px;
-            background: radial-gradient(circle, #fff 0%, var(--core-cyan) 30%, transparent 70%);
-            border-radius: 50%;
-            box-shadow: 0 0 60px var(--core-cyan);
-            z-index: 5;
-            animation: pulseCore 3s infinite alternate;
-        }
-
-        .ring {
-            position: absolute;
-            border-radius: 50%;
-            border: 1px solid var(--dim);
-            transform-style: preserve-3d;
-            animation-play-state: running;
-        }
-        .ring-1 { width: 220px; height: 220px; border: 2px solid var(--core-cyan); border-right-color: transparent; animation: spin 4s linear infinite; }
-        .ring-2 { width: 340px; height: 340px; border: 1px dashed var(--core-cyan); animation: spin-rev 10s linear infinite; opacity: 0.5; }
-        .ring-3 { width: 480px; height: 480px; border: 1px solid var(--dim); border-top-color: var(--core-cyan); animation: spin 15s linear infinite; }
-
-        /* --- FACE 2: LAZY/LIGHT CORE (The Smoke Eye) --- */
-        .lazy-core {
-            position: absolute;
-            width: 100%; height: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            opacity: 0;
-            transform: scale(0.5) rotateY(180deg);
-            pointer-events: none;
-            transition: opacity 0.5s, transform 0.5s;
-        }
-
-        /* Minimalist Smoke Effect */
-        .smoke-wrap {
-            position: relative;
-            width: 300px; height: 300px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .smoke-circle {
-            position: absolute;
-            width: 150px; height: 150px;
-            border: 1px solid var(--core-cyan);
-            border-radius: 50%;
-            opacity: 0.3;
-            animation: drift-smoke 4s ease-in-out infinite alternate;
-            box-shadow: 0 0 40px var(--core-cyan);
-        }
-
-        .lazy-pupil {
-            width: 30px; height: 30px;
-            background: var(--core-cyan);
-            border-radius: 50%;
-            box-shadow: 0 0 20px var(--core-cyan);
-            transition: transform 0.1s ease-out;
-            z-index: 5;
-        }
-
-        /* --- MODE TOGGLE LOGIC --- */
-        body.mode-heavy .neural-core { opacity: 1; transform: scale(1); pointer-events: auto; }
-        body.mode-heavy .lazy-core { opacity: 0; transform: scale(0.5) rotateY(180deg); pointer-events: none; }
-
-        body.mode-lazy .neural-core { opacity: 0; transform: scale(0.5) rotateY(-180deg); pointer-events: none; }
-        body.mode-lazy .lazy-core { opacity: 1; transform: scale(1) rotateY(0deg); pointer-events: auto; }
-
-        /* --- HUD --- */
-        .hud {
-            position: fixed;
-            width: 100%; height: 100%;
-            pointer-events: none;
-            z-index: 20;
-            padding: 40px;
-            box-sizing: border-box;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-        }
-
-        .hud-header { display: flex; justify-content: space-between; align-items: flex-start; }
-        .hud-footer { display: flex; justify-content: space-between; align-items: flex-end; }
-
-        .tag {
-            font-size: 0.7rem;
-            letter-spacing: 4px;
-            text-transform: uppercase;
-            background: rgba(0, 243, 255, 0.05);
-            padding: 5px 15px;
-            border-left: 2px solid var(--core-cyan);
-            transition: all 0.3s;
-        }
-
-        .status-box { display: flex; flex-direction: column; gap: 5px; }
-        .status-value { font-weight: 500; font-size: 1.2rem; text-shadow: 0 0 10px var(--core-cyan); transition: all 0.3s; }
-
-        .tool-notif {
-            position: absolute;
-            bottom: 150px; left: 50%;
-            transform: translateX(-50%);
-            text-align: center;
-            opacity: 0;
-            transition: all 0.3s;
-        }
-        .tool-notif.active { opacity: 1; transform: translateX(-50%) translateY(-20px); }
-        .tool-name { font-size: 1.5rem; color: var(--core-green); text-shadow: 0 0 20px var(--core-green); }
-
-        /* --- STATES --- */
-        body.thinking { --core-cyan: var(--core-violet); }
-        body.working { --core-cyan: var(--core-green); }
-
-        /* Thinking: Heavy */
-        body.mode-heavy.thinking .core-heart { animation: thinkingHeart 0.5s infinite alternate; }
-        /* Working: Heavy */
-        body.mode-heavy.working .core-heart { width: 10px; height: 300px; border-radius: 5px; animation: scanBeam 1s infinite; }
-        body.mode-heavy.working .ring { animation-play-state: paused; opacity: 0.2; }
-
-        /* Thinking: Lazy */
-        body.mode-lazy.thinking .smoke-circle { animation: think-smoke 0.5s infinite alternate; opacity: 0.8; }
-        /* Working: Lazy */
-        body.mode-lazy.working .smoke-circle { border-radius: 10px; transform: scale(1.5); }
-
-        /* --- ANIMATIONS --- */
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        @keyframes spin-rev { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
-        @keyframes pulseCore { from { transform: scale(1); opacity: 0.8; } to { transform: scale(1.1); opacity: 1; } }
-        
-        @keyframes thinkingHeart {
-            0% { transform: scale(1) rotate(0deg); border-radius: 50%; }
-            100% { transform: scale(1.5) rotate(180deg); border-radius: 30% 70% 70% 30% / 30% 30% 70% 70%; }
-        }
-
-        @keyframes scanBeam {
-            0% { transform: scaleY(0.5); opacity: 0.5; }
-            50% { transform: scaleY(1.2); opacity: 1; }
-            100% { transform: scaleY(0.5); opacity: 0.5; }
-        }
-
-        @keyframes drift-smoke {
-            0% { transform: translate(-10px, -10px) scale(1); }
-            100% { transform: translate(10px, 10px) scale(1.1); }
-        }
-
-        @keyframes think-smoke {
-            from { border-width: 1px; box-shadow: 0 0 40px var(--core-cyan); }
-            to { border-width: 4px; box-shadow: 0 0 80px var(--core-cyan); }
-        }
-
-    </style>
+    <title>ValH · Neural Assistant</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
-<body id="main-body" class="mode-lazy">
-
-    <div class="stars"></div>
-    <div class="grid"></div>
-
-    <button class="mode-lazy" onclick="toggleMode()">TOGGLE_VIBE</button>
-
-    <div class="hud">
-        <div class="hud-header">
-            <div class="status-box">
-                <div class="tag" id="mode-tag">MODE: GHOST_VIBE</div>
-                <div class="status-value" id="status-val">IDLE</div>
-            </div>
-            <div class="status-box" style="text-align: right;">
-                <div class="tag">User.Atharv</div>
-                <div class="status-value" id="time-val">00:00:00</div>
-            </div>
-        </div>
-
-        <div class="tool-notif" id="tool-box">
-            <div class="tag" style="border: none; background: none; color: var(--core-green);">ACTIVE_PROCESS</div>
-            <div class="tool-name" id="active-tool">NULL</div>
-        </div>
-
-        <div class="hud-footer">
-            <div class="tag" id="coord-val">X: 000 / Y: 000</div>
-            <div class="tag">ValH // V4.1.0_GHOST_MODE</div>
-        </div>
-    </div>
-
-    <div id="core-wrap">
+<body data-state="IDLE">
+    
+    <div class="layout">
         
-        <!-- FACE 1: HEAVY (Neural Core) -->
-        <div class="neural-core">
-            <div class="core-heart"></div>
-            <div class="ring ring-1"></div>
-            <div class="ring ring-2"></div>
-            <div class="ring ring-3"></div>
-        </div>
-
-        <!-- FACE 2: LAZY (Ghost Mode) -->
-        <div class="lazy-core">
-            <div class="smoke-wrap">
-                <div class="smoke-circle"></div>
-                <div class="smoke-circle" style="animation-delay: -2s; width: 180px; height: 180px;"></div>
-                <div class="lazy-pupil" id="lazy-pupil"></div>
+        <!-- LEFT: Tool Execution Monitor -->
+        <aside class="tools-panel">
+            <div class="panel-header">
+                <h2>Tool Activity</h2>
+                <div class="header-actions">
+                    <!-- EXTENSION POINT: Add more controls here (e.g., pause, settings) -->
+                    <button class="icon-btn" id="clear-tools" title="Clear history">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                    </button>
+                </div>
             </div>
-        </div>
+            
+            <!-- Stats Overview -->
+            <div class="stats">
+                <div class="stat-item">
+                    <span class="stat-value" id="total-ops">0</span>
+                    <span class="stat-label">Total</span>
+                </div>
+                <div class="stat-item success">
+                    <span class="stat-value" id="success-ops">0</span>
+                    <span class="stat-label">Success</span>
+                </div>
+                <div class="stat-item error">
+                    <span class="stat-value" id="error-ops">0</span>
+                    <span class="stat-label">Failed</span>
+                </div>
+            </div>
+            
+            <!-- Tool Timeline -->
+            <div id="tools-timeline">
+                <!-- EXTENSION POINT: Tool execution cards will be injected here -->
+                <div class="empty-state">
+                    <p>Waiting for activity...</p>
+                </div>
+            </div>
+        </aside>
 
+        <!-- RIGHT: Conversation Interface -->
+        <main class="conversation-area">
+            
+            <!-- Header with Natural Mascot -->
+            <header class="app-header">
+                <div class="branding">
+                    <div class="logo">
+                        <h1>ValH</h1>
+                    </div>
+                    <!-- EXTENSION POINT: Natural mascot with different states -->
+                    <div class="mascot" id="mascot">
+                        <div class="mascot-face">
+                            <div class="eyes">
+                                <div class="eye left">
+                                    <div class="pupil"></div>
+                                </div>
+                                <div class="eye right">
+                                    <div class="pupil"></div>
+                                </div>
+                            </div>
+                            <div class="mouth"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="status-indicator">
+                    <div class="pulse-dot"></div>
+                    <span id="status-text">Listening</span>
+                </div>
+            </header>
+
+            <!-- Messages -->
+            <div id="messages-container">
+                <div id="messages">
+                    <!-- EXTENSION POINT: Messages will be appended here -->
+                    <div class="system-msg">System initialized · Ready for input</div>
+                </div>
+            </div>
+
+            <!-- Input -->
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <textarea 
+                        id="user-input" 
+                        placeholder="Ask me anything..." 
+                        rows="1"
+                        autocomplete="off"
+                        spellcheck="false"></textarea>
+                    <button id="send-btn" aria-label="Send message">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </main>
     </div>
 
-    <script>
-        const body = document.getElementById('main-body');
-        const coreWrap = document.getElementById('core-wrap');
-        const statusVal = document.getElementById('status-val');
-        const timeVal = document.getElementById('time-val');
-        const coordVal = document.getElementById('coord-val');
-        const toolBox = document.getElementById('tool-box');
-        const activeTool = document.getElementById('active-tool');
-        const modeTag = document.getElementById('mode-tag');
-        const lazyPupil = document.getElementById('lazy-pupil');
-
-        let currentMode = 'heavy';
-
-        function setMode(mode) {
-            currentMode = mode;
-            if (currentMode === 'lazy') {
-                body.classList.remove('mode-heavy');
-                body.classList.add('mode-lazy');
-                modeTag.innerText = 'MODE: GHOST_VIBE';
-            } else {
-                body.classList.remove('mode-lazy');
-                body.classList.add('mode-heavy');
-                modeTag.innerText = 'MODE: GHOST_VIBE';
-            }
-        }
-
-        function toggleMode() {
-            setMode(currentMode === 'heavy' ? 'lazy' : 'heavy');
-        }
-
-        // Mouse Interaction
-        document.addEventListener('mousemove', (e) => {
-            const xAxis = (window.innerWidth / 2 - e.clientX) / 25;
-            const yAxis = (window.innerHeight / 2 - e.clientY) / 25;
-            
-            coreWrap.style.transform = `rotateY(${xAxis}deg) rotateX(${yAxis}deg)`;
-            coordVal.innerText = `X: ${Math.floor(e.clientX)} / Y: ${Math.floor(e.clientY)}`;
-
-            // Lazy Pupil Tracking
-            if (currentMode === 'lazy') {
-                const px = (e.clientX / window.innerWidth - 0.5) * 80;
-                const py = (e.clientY / window.innerHeight - 0.5) * 80;
-                lazyPupil.style.transform = `translate(${px}px, ${py}px)`;
-            }
-        });
-
-        // Live Clock
-        setInterval(() => {
-            const now = new Date();
-            timeVal.innerText = now.toTimeString().split(' ')[0];
-        }, 1000);
-
-        // WebSocket for States
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws`;
-        let socket;
-
-        function connect() {
-            socket = new WebSocket(wsUrl);
-            socket.onmessage = (e) => {
-                const data = JSON.parse(e.data);
-                
-                // Handle Mode Change Command
-                if (data.mode) {
-                    setMode(data.mode);
-                }
-
-                if (data.status) {
-                    updateStatus(data.status, data.details);
-                }
-            };
-            socket.onclose = () => setTimeout(connect, 3000);
-        }
-
-        function updateStatus(status, details) {
-            // Remove existing status classes (thinking, working, etc.)
-            body.classList.remove('thinking', 'working', 'tool_use', 'idle');
-            body.classList.add(status);
-            statusVal.innerText = status.toUpperCase();
-
-            if (status === 'tool_use' || status === 'working') {
-                toolBox.classList.add('active');
-                activeTool.innerText = details ? details.toUpperCase() : 'EXECUTING_LOGIC';
-            } else {
-                toolBox.classList.remove('active');
-            }
-        }
-
-        connect();
-    </script>
+    <script src="script.js"></script>
 </body>
 </html>

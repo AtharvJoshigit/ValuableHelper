@@ -5,6 +5,7 @@ import asyncio
 import uuid
 from typing import Optional, List, Any, AsyncIterator, Set
 
+from app.app_context import get_app_context
 from engine.core.provide import get_provider
 from engine.core.types import (
     Message, Role, ToolResult, StreamChunk, ToolCall,
@@ -14,6 +15,8 @@ from engine.core.memory import Memory
 from engine.registry.tool_registry import ToolRegistry
 from engine.executors.execution_engine import ExecutionEngine
 from engine.core.agent_instance_manager import AgentConfig
+from infrastructure.event_bus import EventBus
+from domain.event import Event, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ class Agent:
         self.max_steps = config.max_steps
         self.sensitive_tool_names = config.sensitive_tool_names
         self.pending_tool_calls: Optional[List[ToolCall]] = None
+        self.event_bus = get_app_context().event_bus
 
         if self.system_prompt and not self.memory.get_history():
             self.memory.add_message(Message(role=Role.SYSTEM, content=self.system_prompt))
@@ -87,6 +91,14 @@ class Agent:
 
     async def run(self, input_text: str) -> str:
         self.memory.add_user_message(input_text)
+        
+        # Emit User Message Event
+        self.event_bus.publish(Event(
+            type=EventType.USER_MESSAGE,
+            payload={"content": input_text},
+            source="agent"
+        ))
+
         step_count = 0
         while step_count < self.max_steps:
             step_count += 1
@@ -113,6 +125,12 @@ class Agent:
             if self.pending_tool_calls:
                 is_approved = input_text.strip().lower() in ["yes", "y", "approve", "confirm"]
                 
+                self.event_bus.publish(Event(
+                    type=EventType.USER_APPROVAL,
+                    payload={"approved": is_approved, "input": input_text},
+                    source="agent"
+                ))
+
                 if is_approved:
                     yield StreamChunk(content="✅ Permission granted. Resuming execution...\n")
                     async for chunk in self._execute_and_stream_tools(self.pending_tool_calls):
@@ -133,6 +151,11 @@ class Agent:
                 
             else:
                 self.memory.add_user_message(input_text)
+                self.event_bus.publish(Event(
+                    type=EventType.USER_MESSAGE,
+                    payload={"content": input_text},
+                    source="agent"
+                ))
 
             step_count = 0
             while step_count < self.max_steps:

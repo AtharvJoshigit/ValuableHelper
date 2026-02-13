@@ -3,8 +3,9 @@ import asyncio
 from threading import Lock
 from typing import Any, Dict, Optional, List
 
+from app.app_context import get_app_context
+
 from src.domain.event import Event, EventType
-from src.infrastructure.event_bus import EventBus
 from src.domain.task import Task
 from src.services.telegram_bot.config import ADMIN_USER_IDS
 
@@ -23,7 +24,7 @@ class NotificationService:
         if not hasattr(self, "_initialized"):
             self._initialized = True
             self._application = None
-            self._publisher = EventBus()
+            self._publisher = get_app_context().event_bus
             self._subscribe_to_events()
 
     def set_application(self, app):
@@ -137,4 +138,5 @@ class NotificationService:
         await self._send_message_to_admins(text, reply_markup=reply_markup)
 
 # Singleton instance
-notification_service = NotificationService()
+def get_notification_service() : 
+    return NotificationService()

@@ -12,8 +12,8 @@ class RequestApprovalTool(BaseTool):
     """
     name: str = "request_approval"
     description: str = "Request user permission before executing potentially destructive operations."
-    action_type: str = Field(..., description="Type of action: 'file_write', 'file_delete', 'command_exec', 'api_call'")
-    action_details: dict = Field(..., description="Details of the proposed action")
+    action_type: str = Field('n/a', description="Type of action: 'file_write', 'file_delete', 'command_exec', 'api_call'")
+    action_details: dict = Field('n/a', description="Details of the proposed action")
     risk_level: str = Field(default="medium", description="Risk level: 'low', 'medium', 'high'")
     
     def execute(self, **kwargs) -> Any:

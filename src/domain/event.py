@@ -17,6 +17,10 @@ class EventType(str, Enum):
     SYSTEM_SHUTDOWN = "system_shutdown"
     USER_MESSAGE = "user_message"
     USER_APPROVAL = "user_approval"
+    HEARTBEAT = "heartbeat"
+    TOOL_EXECUTION_STARTED = "tool_execution_started"
+    TOOL_EXECUTION_COMPLETED = "tool_execution_completed"
+    TOOL_EXECUTION_FAILED = "tool_execution_failed"
 
 class Event(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

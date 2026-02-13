@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 from engine.core.agent_instance_manager import get_agent_manager
-from engine.providers.google.models import GeminiModel
+from engine.core.models import LLModel
 from pydantic import Field
 from engine.registry.base_tool import BaseTool
 import logging
@@ -22,7 +22,7 @@ class SwitchModelTool(BaseTool):
         "gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash, etc."
     )
     
-    model: str = Field(
+    model: str = Field(LLModel.GEMINI_3_FLASH_PREVIEW,
         description=(
             "The model to switch to. Choose from: "
             "gemini-3-pro-preview (latest, most capable), "
@@ -61,7 +61,7 @@ class SwitchModelTool(BaseTool):
         try:
             if isinstance(model, str):
                 try:
-                    model_enum = GeminiModel(model)
+                    model_enum = LLModel(model)
                     model = model_enum.value
                 except ValueError:
                     logger.warning(f"Model '{model}' not in GeminiModel enum, using as-is")
@@ -113,92 +113,6 @@ class SwitchModelTool(BaseTool):
             }
 
 
-class UpdateAgentConfigTool(BaseTool):
-    """
-    Updates agent configuration parameters like temperature, max_steps, etc.
-    """
-    name: str = "update_agent_config"
-    description: str = (
-        "Updates the agent's configuration parameters such as temperature, max_steps, "
-        "or system prompt while preserving memory and conversation history."
-    )
-    
-    temperature: Optional[float] = Field(
-        default=None,
-        description="Temperature for response randomness (0.0-2.0)"
-    )
-    
-    max_steps: Optional[int] = Field(
-        default=None,
-        description="Maximum number of reasoning steps"
-    )
-    
-    system_prompt: Optional[str] = Field(
-        default=None,
-        description="New system prompt to set agent behavior"
-    )
-    
-    model: Optional[str] = Field(
-        default=None,
-        description="Model to switch to"
-    )
-    
-    agent_id: Optional[str] = Field(
-        default=None,
-        description="Specific agent ID to update (if None, updates current agent)"
-    )
-
-    def execute(self, **kwargs: Any) -> Any:
-        """Execute configuration update."""
-        try:
-            manager = get_agent_manager()
-            
-            update_params = {}
-            if kwargs.get("temperature") is not None:
-                update_params["temperature"] = kwargs["temperature"]
-            if kwargs.get("max_steps") is not None:
-                update_params["max_steps"] = kwargs["max_steps"]
-            if kwargs.get("system_prompt") is not None:
-                update_params["system_prompt"] = kwargs["system_prompt"]
-            if kwargs.get("model") is not None:
-                update_params["model"] = kwargs["model"]
-            
-            if not update_params:
-                return {
-                    "status": "error",
-                    "error": "No parameters provided for update"
-                }
-            
-            agent_id = kwargs.get("agent_id", self.agent_id)
-            
-            updated_agent_id = manager.update_agent(
-                agent_id=agent_id,
-                **update_params
-            )
-            
-            new_info = manager.get_agent_info(updated_agent_id)
-            
-            return {
-                "status": "success",
-                "message": "Agent configuration updated successfully",
-                "agent_id": updated_agent_id,
-                "updated_parameters": update_params,
-                "current_config": {
-                    "model": new_info["model"],
-                    "temperature": new_info["temperature"],
-                    "max_steps": new_info["max_steps"],
-                    "system_prompt": new_info["system_prompt"]
-                }
-            }
-        
-        except Exception as e:
-            logger.error(f"Error updating agent config: {e}")
-            return {
-                "status": "error",
-                "error": str(e)
-            }
-
-
 class ListModelsTools(BaseTool):
     """Lists all available models that can be switched to."""
     name: str = "list_available_models"
@@ -208,7 +122,7 @@ class ListModelsTools(BaseTool):
         """List all available models."""
         models = []
         
-        for model in GeminiModel:
+        for model in LLModel:
             category = "Unknown"
             if "3-" in model.value:
                 category = "Gemini 3 (Latest/Experimental)"

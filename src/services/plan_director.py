@@ -3,14 +3,15 @@ import asyncio
 import time
 from typing import Dict, Any, List, Optional
 
+from app.app_context import get_app_context
+
 from src.domain.task import Task, TaskStatus
-from src.infrastructure.event_bus import EventBus
 from src.domain.event import EventType, Event
 from src.infrastructure.singleton import Singleton
 from src.engine.core.agent_instance_manager import get_agent_manager
 from src.engine.core.types import Message, Role
 from src.services.priority_queue import PriorityQueue
-from src.services.notification_service import notification_service
+from src.services.notification_service import get_notification_service
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,12 @@ class PlanDirector:
     
     def __init__(self, config: PlanDirectorConfig = None):
         self.config = config or PlanDirectorConfig()
-        self.event_bus = EventBus()
+        self.event_bus = get_app_context().event_bus
         self.task_store = Singleton.get_task_store()
         self.priority_queue = PriorityQueue(self.task_store)
         self._started = False
-        self._start_lock = asyncio.Lock()    
+        self._start_lock = asyncio.Lock()
+        self.notification_service = get_notification_service()    
         
         self.processing_tasks: Dict[str, Dict[str, Any]] = {}
         self._watchdog_running = False
@@ -143,7 +145,7 @@ class PlanDirector:
                     "context": {"auto_update": f"Plan generated with {len(subtasks)} subtasks."}
                 }
             )
-            await notification_service.send_plan_approval_request(parent_id, parent.title, len(subtasks))
+            await self.notification_service.send_plan_approval_request(parent_id, parent.title, len(subtasks))
 
     async def _check_parent_completion(self, parent_id: str):
         parent = self.task_store.get_task(parent_id)
@@ -168,7 +170,7 @@ class PlanDirector:
                     "result_summary": summary
                 }
             )
-            await notification_service.send_custom_notification(f"🏁 **Project Completed**: {parent.title}\n{summary}")
+            await self.notification_service().send_custom_notification(f"🏁 **Project Completed**: {parent.title}\n{summary}")
 
     async def _notify_parent_failure(self, parent_id: str, child_id: str):
         parent = self.task_store.get_task(parent_id)
@@ -272,7 +274,7 @@ class PlanDirector:
             "status": TaskStatus.BLOCKED,
             "context": {"blocked_reason": reason, **(details or {})}
         })
-        await notification_service.send_custom_notification(f"❌ **Task Failure**: {task.title}\n{reason}")
+        await self.notification_service.send_custom_notification(f"❌ **Task Failure**: {task.title}\n{reason}")
 
     async def _watchdog_loop(self):
         while True:

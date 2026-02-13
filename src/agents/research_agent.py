@@ -1,14 +1,12 @@
-# file: engine/agents/research_agent.py
-
 from agents.agent_id import AGENT_ID
 from agents.base_agent import BaseAgent
 from engine.registry.tool_registry import ToolRegistry
 from tools.web_search_tool import WebSearchTool
-
+from tools.web_scraper_tool import WebScraperTool
 
 class ResearchAgent(BaseAgent):
     """
-    Specialized agent for research tasks with web search capabilities.
+    Specialized agent for research tasks with web search and scraping capabilities.
     """
     
     def __init__(self, config: dict = None):
@@ -26,6 +24,7 @@ class ResearchAgent(BaseAgent):
         """Register research-specific tools."""
         registry = ToolRegistry()
         registry.register(WebSearchTool())
+        registry.register(WebScraperTool())
         return registry
     
     def start(self):

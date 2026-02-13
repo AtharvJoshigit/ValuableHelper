@@ -4,12 +4,18 @@ import uuid
 from typing import Dict, Any
 
 from agents.agent_id import AGENT_ID
+from app.app_context import get_app_context
+from engine.core.agent_instance_manager import get_agent_manager
+from infrastructure.command_bus import CommandBus
 from engine.core.agent import Agent
 from engine.registry.tool_registry import ToolRegistry
 from engine.registry.tool_discovery import ToolDiscovery
-from src.infrastructure.command_bus import CommandBus
-from src.infrastructure.websocket_manager import get_websocket_manager
-from src.domain.event import Event, EventType
+from services.notification_service import get_notification_service
+import telegram
+from infrastructure.command_bus import CommandBus
+from infrastructure.websocket_manager import get_websocket_manager
+from domain.event import Event, EventType
+from services.telegram_bot.config import ADMIN_USER_IDS
 
 from .base_agent import BaseAgent
 
@@ -21,7 +27,7 @@ class MainAgent(BaseAgent):
     It consumes user events and streams responses back to UI layers.
     """
 
-    def __init__(self, bot_gateway, bus, config: dict | None = None):
+    def __init__(self, bot_gateway, config: dict | None = None):
         default_config = {
             "model_id": "gemini-3-flash-preview",
             "provider": "google",
@@ -33,10 +39,12 @@ class MainAgent(BaseAgent):
 
         super().__init__(default_config)
 
-        self.command_bus = bus
+        self.command_bus = get_app_context().command_bus
         self.bot = bot_gateway
+        self.notification_service = get_notification_service()
         self.running = True
         self.ws_manager = get_websocket_manager()
+        self.agent_manager = get_agent_manager()
         self._agents: Dict[int, Agent] = {}
 
     def _get_registry(self) -> ToolRegistry:
@@ -65,7 +73,7 @@ class MainAgent(BaseAgent):
             self._agents[chat_id] = self.create(
                 system_prompt_file=[
                     "identity.md",
-                    "system.md"
+                    "system.md",
                     "user.md",
                     "memory.md",
                     "tools_call.md",
@@ -76,7 +84,7 @@ class MainAgent(BaseAgent):
             )
             logger.info(f"✨ Created new agent session: {session_agent_id}")
             
-        return self._agents[chat_id]
+        return self.agent_manager.get_agent()
 
     async def run(self):
         logger.info("🧠 MainAgent orchestrator loop started")
@@ -95,27 +103,67 @@ class MainAgent(BaseAgent):
     async def _handle_user_message(self, event: Event):
         chat_id = event.payload["chat_id"]
         text = event.payload["text"]
+        source = getattr(event, "source", "telegram")
         await self.ws_manager.broadcast_status("thinking", details="Processing User Message")
 
         try:
             agent = self._get_or_create_agent(chat_id)
             full_response_text = ""
+            current_status = "🤔 Thinking..."
             
             async for chunk in agent.stream(text):
                 if chunk.content:
                     full_response_text += chunk.content
-                    await self.bot.send_or_edit(chat_id=chat_id, text=full_response_text)
+                    
+                    if source == "web_ui":
+                        # Push to UI via WebSocket
+                        await self.ws_manager.broadcast({
+                            "type": "chat_message",
+                            "payload": {
+                                "role": "assistant",
+                                "content": full_response_text
+                            }
+                        })
+                    else:
+                        await self.bot.send_or_edit(
+                            chat_id=chat_id, 
+                            text=f"{full_response_text}\n\n{current_status}"
+                        )
                 
-                if chunk.tool_result:
-                    tool_name = chunk.tool_result.name
-                    logger.info(f"🔧 Tool Execution: {tool_name}")
+                if chunk.tool_call:
+                    tool_name = chunk.tool_call.name
+                    current_status = f"🔧 Using {tool_name}..."
+                    if source != "web_ui":
+                        await self.bot.send_or_edit(
+                            chat_id=chat_id, 
+                            text=f"{full_response_text}\n\n{current_status}"
+                        )
                     await self.ws_manager.broadcast_status("tool_use", details=tool_name)
-                    await asyncio.sleep(0.5) 
 
-            await self.bot.send_or_edit(chat_id=chat_id, text=full_response_text, is_final=True)
+                if chunk.tool_result:
+                    current_status = "🤔 Thinking..."
+
+            if source == "telegram":
+                 await self.bot.send_or_edit(chat_id=chat_id, text=full_response_text + "\n ✔️", is_final=True)
+            elif source == "web_ui":
+                 # Final signal
+                 await self.ws_manager.broadcast({
+                    "type": "chat_message",
+                    "payload": {
+                        "role": "assistant",
+                        "content": full_response_text,
+                        "final": True
+                    }
+                })
+            else:
+                 await self.notification_service.send_custom_notification(full_response_text)
+
         except Exception as e:
             logger.error(f"Error handling message: {e}")
-            await self.bot.send_or_edit(chat_id=chat_id, text=f"⚠️ Error: {str(e)}", is_final=True)
+            if source == "web_ui":
+                 await self.ws_manager.broadcast({"type": "error", "message": str(e)})
+            else:
+                 await self.bot.send_or_edit(chat_id=chat_id, text=f"⚠️ Error: {str(e)}", is_final=True)
         finally:
             await self.ws_manager.broadcast_status("idle")
 

@@ -2,26 +2,26 @@ import asyncio
 from src.domain.event import Event
 
 class CommandBus:
-    _instance = None
+    _instances = {}
 
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            # Do NOT create asyncio.Queue() here. 
-            # It will bind to the wrong loop (or no loop) on import.
-            cls._instance._queue = None 
-        return cls._instance
+        loop = asyncio.get_running_loop()
+        if loop not in cls._instances:
+            instance = super().__new__(cls)
+            instance._queue = asyncio.Queue()
+            cls._instances[loop] = instance
+        return cls._instances[loop]
 
-    @property
-    def queue(self):
-        # Lazy initialization ensures the Queue attaches to the CURRENT running loop
-        if self._queue is None:
-            self._queue = asyncio.Queue()
-        return self._queue
+    # @property
+    # def queue(self):
+    #     # Lazy initialization ensures the Queue attaches to the CURRENT running loop
+    #     if self._queue is None:
+    #         self._queue = asyncio.Queue()
+    #     return self._queue
 
     async def send(self, event: Event):
         # print(f"Event: {event.type}") # Optional logging
-        await self.queue.put(event)
+        await self._queue.put(event)
 
     async def receive(self) -> Event:
-        return await self.queue.get()
+        return await self._queue.get()

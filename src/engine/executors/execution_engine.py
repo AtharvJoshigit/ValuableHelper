@@ -1,9 +1,12 @@
 import asyncio
 import logging
 import inspect
-from typing import List
+from typing import List, Optional
+from app.app_context import get_app_context
 from engine.core.types import ToolCall, ToolResult
 from engine.registry.tool_registry import ToolRegistry
+from infrastructure.event_bus import EventBus
+from domain.event import Event, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +17,9 @@ class ExecutionEngine:
     
     def __init__(self, registry: ToolRegistry):
         self.registry = registry
+        self.event_bus = get_app_context().event_bus
+        if not self.event_bus:
+            logger.warning("EventBus not provided to ExecutionEngine. Events will not be published.")
 
     async def execute_tool_calls(self, tool_calls: List[ToolCall]) -> List[ToolResult]:
         """
@@ -25,6 +31,7 @@ class ExecutionEngine:
         Returns:
             List of ToolResult objects corresponding to the calls.
         """
+
         tasks = []
         for call in tool_calls:
             tasks.append(self._execute_single_tool(call))
@@ -35,6 +42,24 @@ class ExecutionEngine:
         """
         Execute a single tool call safely, supporting both sync and async tools.
         """
+        logger.info(f"⚡ ExecutionEngine: About to execute {call.name}")
+        
+        if self.event_bus:
+            logger.info(f"⚡ ExecutionEngine: Publishing START event for {call.name}")
+            try:
+                self.event_bus.publish(Event(
+                    type=EventType.TOOL_EXECUTION_STARTED,
+                    payload={
+                        "tool_call_id": call.id,
+                        "tool_name": call.name,
+                        "arguments": call.arguments
+                    }
+                ))
+            except Exception as e:
+                logger.error(f"⚡ ExecutionEngine: Failed to publish START event: {e}")
+        else:
+            logger.error("⚡ ExecutionEngine: EventBus is None!")
+
         try:
             tool = self.registry.get_tool(call.name)
             
@@ -58,24 +83,60 @@ class ExecutionEngine:
                     timeout=timeout
                 )
             
+            if self.event_bus:
+                self.event_bus.publish(Event(
+                    type=EventType.TOOL_EXECUTION_COMPLETED,
+                    payload={
+                        "tool_call_id": call.id,
+                        "tool_name": call.name,
+                        "result": str(result)[:1000] # Truncate for log safety
+                    }
+                ))
+
             return ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
                 result=result
             )
+
         except asyncio.TimeoutError:
-            logger.error(f"Tool {call.name} timed out after {timeout}s")
+            error_msg = f"Tool {call.name} timed out after {timeout}s"
+            logger.error(error_msg)
+            
+            if self.event_bus:
+                self.event_bus.publish(Event(
+                    type=EventType.TOOL_EXECUTION_FAILED,
+                    payload={
+                        "tool_call_id": call.id,
+                        "tool_name": call.name,
+                        "error": error_msg
+                    }
+                ))
+
             return ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
-                result=f"Tool {call.name} timed out after {timeout}s",
-                error=f"Tool execution timed out after {timeout}s"
+                result=error_msg,
+                error=error_msg
             )
+
         except Exception as e:
-            logger.error(f"Error executing tool {call.name}: {e}")
+            error_msg = f"Error executing tool {call.name}: {e}"
+            logger.error(error_msg)
+
+            if self.event_bus:
+                self.event_bus.publish(Event(
+                    type=EventType.TOOL_EXECUTION_FAILED,
+                    payload={
+                        "tool_call_id": call.id,
+                        "tool_name": call.name,
+                        "error": str(e)
+                    }
+                ))
+
             return ToolResult(
                 tool_call_id=call.id,
                 name=call.name,
-                result=f"Error executing tool {call.name}: {e}",
+                result=error_msg,
                 error=str(e)
             )

@@ -1,6 +1,7 @@
 import os
 import logging
 from typing import Any, Optional
+from app.app_context import get_app_context
 from pydantic import Field
 from engine.registry.base_tool import BaseTool
 from services.cron_service import cron_service
@@ -15,7 +16,7 @@ class CronManagerTool(BaseTool):
     """
     name: str = "cron_manager"
     description: str = "Add, list, or stop recurring automated tasks. Cron Scheduler"
-    action: str = Field(..., description="Action to perform: 'add', 'list', or 'stop'.")
+    action: str = Field("Ask User", description="Action to perform: 'add', 'list', or 'stop'.")
     job_name: Optional[str] = Field(None, description="Unique name for the job.")
     interval: Optional[int] = Field(None, description="Interval in seconds (for 'add').")
     instruction: Optional[str] = Field(None, description="The text instruction to run (for 'add').")
@@ -32,14 +33,21 @@ class CronManagerTool(BaseTool):
             
             # Callback logic: Send a System Message event to the Main Agent
             async def cron_callback(instr):
-                bus = CommandBus() # Global singleton instance
+                from src.services.telegram_bot.config import ADMIN_USER_IDS
+                target_chat_id = ADMIN_USER_IDS[0] if ADMIN_USER_IDS else 0
+                
+                if target_chat_id == 0:
+                    logger.error("Cannot execute cron: No Admin ID configured.")
+                    return
+
+                bus = get_app_context().command_bus # Global singleton instance
                 await bus.send(Event(
                     type=EventType.USER_MESSAGE,
                     payload={
-                        "chat_id": 0, # System chat ID
+                        "chat_id": target_chat_id, # Target the first admin
                         "text": f"System Cron ({job_name}): {instr}"
                     },
-                    source="system"
+                    source="cron_system"
                 ))
 
             cron_service.add_job(job_name, interval, cron_callback, instruction)
