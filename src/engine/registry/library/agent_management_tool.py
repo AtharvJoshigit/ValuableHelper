@@ -102,6 +102,7 @@ class CreateAgentTool(BaseTool):
             
             registry = ToolRegistry()
             registry.register(self)
+            registry.register(SwitchAgentTool())
             registry.register(ReadFileTool())
             registry.register(ListDirectoryTool())
             registry.register(CreateFileTool(file_path='.', content='..'))

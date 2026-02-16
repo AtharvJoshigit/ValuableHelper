@@ -21,6 +21,9 @@ class ExecutionEngine:
         if not self.event_bus:
             logger.warning("EventBus not provided to ExecutionEngine. Events will not be published.")
 
+    def set_tool_registry(self, registry: ToolRegistry):
+        self.registry = registry
+    
     async def execute_tool_calls(self, tool_calls: List[ToolCall]) -> List[ToolResult]:
         """
         Execute a list of tool calls in parallel.

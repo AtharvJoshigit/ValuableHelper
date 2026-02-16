@@ -1,5 +1,12 @@
+from engine.registry.base_tool import BaseTool
+
+
+import logging
 from typing import Dict, List, Any, Optional
+
 from .base_tool import BaseTool
+
+logger = logging.getLogger(__name__)
 
 class ToolRegistry:
     """
@@ -8,6 +15,7 @@ class ToolRegistry:
     
     def __init__(self):
         self._tools: Dict[str, BaseTool] = {}
+        self._rag_tools: Dict[str, BaseTool] = {}
 
     def register(self, tool: BaseTool) -> None:
         """
@@ -20,6 +28,23 @@ class ToolRegistry:
             raise ValueError(f"Tool '{tool.name}' is already registered.")
         
         self._tools[tool.name] = tool
+    
+    def register_rag_tools(self, tools: List[BaseTool]) -> None:
+        """
+        Register a tool with the registry at runtime.
+        
+        Args:
+            tool: The initialized tool instance to register.
+        """
+        rag_tools: Dict[str, BaseTool] = {}
+        for tool in tools: 
+            if tool.name in self._tools:
+                logger.error(f"Tool '{tool.name}' is already registered.")
+                continue
+            rag_tools[tool.name] = tool
+            
+        
+        self._rag_tools = rag_tools
 
     def get_tool(self, name: str) -> BaseTool:
         """
@@ -34,15 +59,18 @@ class ToolRegistry:
         Raises:
             KeyError: If the tool is not found.
         """
-        if name not in self._tools:
-            raise KeyError(f"Tool '{name}' not found in registry.")
-        return self._tools[name]
+        if name in self._tools:
+            return self._tools[name]
+        elif name in self._rag_tools:
+            return self._rag_tools[name]
+        
+        raise KeyError(f"Tool '{name}' not found in registry.")
     
     def get_all_tools(self) -> List[BaseTool]:
         """
         Get a list of all registered tools.
         """
-        return list(self._tools.values())
+        return list[BaseTool](self._tools.values()) + list[BaseTool](self._rag_tools.values())
 
     def export_for(self, provider_type: str) -> List[Dict[str, Any]]:
         """

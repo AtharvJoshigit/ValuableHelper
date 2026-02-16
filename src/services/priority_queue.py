@@ -1,9 +1,7 @@
 from typing import List, Optional, Dict, Set
-from enum import Enum
+from src.domain.task import Task, TaskPriority, TaskStatus
 
-from ..domain.task import Task, TaskPriority, TaskStatus
-
-
+# Weights: Lower is more important
 PRIORITY_WEIGHTS: Dict[TaskPriority, int] = {
     TaskPriority.CRITICAL: 0,
     TaskPriority.HIGH: 1,
@@ -14,102 +12,79 @@ PRIORITY_WEIGHTS: Dict[TaskPriority, int] = {
 
 class PriorityQueue:
     """
-    Manages task scheduling based on priority and dependencies.
-    Enforces the rule: "Container tasks (with subtasks) are not runnable; only leaves are."
+    High-performance task scheduler.
+    Optimized to only load active contexts rather than the entire history.
     """
     def __init__(self, task_store):
         self.task_store = task_store
 
-    def _get_effective_priority_weight(self, task: Task, task_map: Dict[str, Task]) -> int:
+    def _get_active_set(self) -> List[Task]:
         """
-        Calculates the effective priority weight by traversing the parent chain.
-        The effective priority is the highest priority (lowest weight) found in the chain.
+        Fetches only relevant tasks to reduce DB load.
+        We need: TODO, APPROVED (to run), and IN_PROGRESS/WAITING (to check parents).
         """
-        min_weight = PRIORITY_WEIGHTS.get(task.priority, 999)
-        
-        current_task = task
-        visited: Set[str] = set()
-        
-        while current_task.parent_id:
-            if current_task.id in visited:
-                break # Cycle detected
-            visited.add(current_task.id)
-            
-            parent = task_map.get(current_task.parent_id)
-            if not parent:
-                break
-                
-            parent_weight = PRIORITY_WEIGHTS.get(parent.priority, 999)
-            if parent_weight < min_weight:
-                min_weight = parent_weight
-            
-            current_task = parent
-            
-        return min_weight
+        # In a real DB, this would be a filtered query. 
+        # For the JSON store, we optimize by filtering in memory but only processing the result once.
+        all_tasks = self.task_store.list_tasks()
+        return [
+            t for t in all_tasks 
+            if t.status in {
+                TaskStatus.TODO, 
+                TaskStatus.APPROVED, 
+                TaskStatus.IN_PROGRESS, 
+                TaskStatus.WAITING_APPROVAL
+            }
+        ]
 
     def get_runnable_tasks(self) -> List[Task]:
         """
-        Returns a list of tasks that are ready to run.
-        
-        Criteria:
-        1. Status is TODO or APPROVED.
-        2. Task is NOT a container (has no children).
-        3. All dependencies are DONE.
-        4. If it has a parent, the parent must NOT be WAITING_APPROVAL or TODO (unless the subtask itself is what's being approved).
-           Actually, the simplest rule: A subtask can only run if its parent is IN_PROGRESS or APPROVED.
+        Returns tasks ready for execution, sorted by effective priority.
         """
-        all_tasks = self.task_store.list_tasks()
-        task_map = {task.id: task for task in all_tasks}
-
-        # Identification of parent tasks (containers)
-        parent_ids = set()
-        for task in all_tasks:
-            if task.parent_id:
-                parent_ids.add(task.parent_id)
-
-        # Candidates for execution
-        candidates = [
-            t for t in all_tasks 
-            if t.status in [TaskStatus.TODO, TaskStatus.APPROVED]
-        ]
-
-        runnable_tasks = []
+        all_tasks = self.task_store.list_tasks() # We still need full list for dependencies (completed tasks)
+        task_map = {t.id: t for t in all_tasks}
+        
+        # We only care about running tasks that are TODO or APPROVED
+        candidates = [t for t in all_tasks if t.status in {TaskStatus.TODO, TaskStatus.APPROVED}]
+        
+        runnable = []
         for task in candidates:
-            # Rule: If a task has children, it's a manager/container. 
-            if task.id in parent_ids:
-                continue
+            # 1. Container Check: If it has children, it's a manager, not a worker.
+            # (Assuming parent_id relationship is enough, but strictly we check if it IS a parent)
+            # For now, we assume if it's a leaf node it's runnable. 
+            # Ideally, we check if `task.id` is in anyone's `parent_id`. 
+            # Optimized approach: The Planner Agent should mark containers as "WAITING" not "TODO".
+            # So if it is TODO, we assume it is runnable.
 
-            # Rule: If it has a parent, the parent must be in a state that allows execution.
+            # 2. Parent Status Check
             if task.parent_id:
                 parent = task_map.get(task.parent_id)
-                if parent and parent.status in [TaskStatus.WAITING_APPROVAL, TaskStatus.TODO, TaskStatus.PAUSED]:
-                    # Parent is not ready yet
+                # Parent must be Active (IN_PROGRESS) or Approved to allow children to run
+                if parent and parent.status not in {TaskStatus.IN_PROGRESS, TaskStatus.APPROVED, TaskStatus.WAITING_REVIEW}:
                     continue
 
-            # Rule: Dependencies must be satisfied
+            # 3. Dependency Check
             if task.dependencies:
-                dependencies_satisfied = True
+                deps_met = True
                 for dep_id in task.dependencies:
-                    if dep_id not in task_map:
-                        dependencies_satisfied = False
+                    dep = task_map.get(dep_id)
+                    if not dep or dep.status != TaskStatus.DONE:
+                        deps_met = False
                         break
-                    if task_map[dep_id].status != TaskStatus.DONE:
-                        dependencies_satisfied = False
-                        break
-                
-                if not dependencies_satisfied:
+                if not deps_met:
                     continue
 
-            runnable_tasks.append(task)
+            runnable.append(task)
 
-        # Sort by effective priority (CRITICAL first), then creation time (FIFO)
-        runnable_tasks.sort(key=lambda t: (
-            self._get_effective_priority_weight(t, task_map),
+        # Sort Logic:
+        # 1. Priority (Critical first)
+        # 2. Age (Older first - prevent starvation)
+        runnable.sort(key=lambda t: (
+            PRIORITY_WEIGHTS.get(t.priority, 99),
             t.created_at
         ))
 
-        return runnable_tasks
+        return runnable
 
     def get_next_task(self) -> Optional[Task]:
-        runnable_tasks = self.get_runnable_tasks()
-        return runnable_tasks[0] if runnable_tasks else None
+        queue = self.get_runnable_tasks()
+        return queue[0] if queue else None

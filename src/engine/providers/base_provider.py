@@ -9,7 +9,7 @@ class BaseProvider(ABC):
     """
     
     @abstractmethod
-    async def generate(self, history: List[Message], tools: List[BaseTool]) -> AgentResponse:
+    async def generate(self, history: List[Message], tools: List[BaseTool] = []) -> AgentResponse:
         """
         Generate a complete response from the model.
         
@@ -23,7 +23,7 @@ class BaseProvider(ABC):
         pass
 
     @abstractmethod
-    async def stream(self, history: List[Message], tools: List[BaseTool]) -> Iterator[StreamChunk]:
+    async def stream(self, history: List[Message], tools: List[BaseTool] = []) -> Iterator[StreamChunk]:
         """
         Stream the response from the model.
         

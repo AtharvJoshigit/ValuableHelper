@@ -37,8 +37,8 @@ class Message(BaseModel):
     model_config = ConfigDict(extra='allow')
     role: Role
     content: Optional[str] = None
-    tool_calls: List[ToolCall] = Field(default_factory=list)
-    tool_results: List[ToolResult] = Field(default_factory=list)
+    tool_calls: List[ToolCall] = None
+    tool_results: List[ToolResult] = None
 
 class UsageMetadata(BaseModel):
     model_config = ConfigDict(extra='allow')

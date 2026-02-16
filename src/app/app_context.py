@@ -1,4 +1,5 @@
 
+from engine.core.agent_instance_manager import get_agent_manager
 from infrastructure.command_bus import CommandBus
 from infrastructure.event_bus import EventBus
 
@@ -8,6 +9,7 @@ class AppContext:
     def __init__(self):
         self.command_bus = CommandBus()
         self.event_bus = EventBus()
+        self.agent_manager = get_agent_manager()
 
 _app_context: AppContext | None = None
 

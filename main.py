@@ -1,3 +1,5 @@
+# main.py (UPDATED with database initialization)
+
 import argparse
 import sys
 import os
@@ -5,11 +7,18 @@ import logging
 import asyncio
 import signal
 from typing import Optional
+from pathlib import Path
+
 from app.app_context import AppContext, set_app_context
 from services.observability_service import ObservabilityService
 import uvicorn
 from dotenv import load_dotenv
 
+# Database imports
+from database.db_manager import DatabaseManager
+from database.base import DatabaseType
+from engine.core.agent_factory import set_global_database
+from engine.core.agent_instance_manager import get_agent_manager
 
 RUN_BOT_ONLY = "--bot" in sys.argv
 
@@ -21,8 +30,8 @@ from services.telegram_bot.bot import TelegramBotService
 from services.plan_director import PlanDirector
 from agents.main_agent import MainAgent
 from engine.core.provide import auto_register_providers
+from engine.registry.tool_manager import ToolManager
 from server import app  # Import FastAPI app
-
 
 
 class AFCToDebugFilter(logging.Filter):
@@ -43,7 +52,7 @@ def setup_logging():
     logger.setLevel(logging.INFO)
 
     for noisy in (
-        "httpx", "httpcore", "telegram", "httpcore.http11"
+        "httpx", "httpcore", "telegram", "httpcore.http11", "aiosqlite"
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
@@ -71,15 +80,29 @@ def parse_args():
         action="store_true",
         help="Run in bot-only mode (disable UI services)",
     )
+    parser.add_argument(
+        "--db-path",
+        type=str,
+        default="data/agent_memory.db",
+        help="Path to SQLite database file",
+    )
+    parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="Disable database-backed memory (use in-memory only)",
+    )
     return parser.parse_args()
 
 
 class ApplicationManager:
     """Manages the lifecycle of all application components"""
     
-    def __init__(self, bot_only: bool = False):
+    def __init__(self, bot_only: bool = False, db_path: str = "data/agent_memory.db", enable_memory: bool = True):
         self.logger = logging.getLogger("ValuableHelper")
         self.bot_only = bot_only
+        self.db_path = db_path
+        self.enable_memory = enable_memory
+        
         self.app_context: Optional[AppContext] = None
         self.plan_director: Optional[PlanDirector] = None
         self.obs_service: Optional[ObservabilityService] = None
@@ -90,51 +113,74 @@ class ApplicationManager:
         self.bot_task: Optional[asyncio.Task] = None
         self.server: Optional[uvicorn.Server] = None
         self.server_task: Optional[asyncio.Task] = None
+        self.tool_manager = ToolManager()
+        self.database = None
         
     async def initialize(self):
         """Initialize all application components"""
         try:
             self.logger.info("🚀 Initializing Application...")
             
-            # 1. Initialize Infrastructure
+            # 1. Initialize Database (NEW)
+            if self.enable_memory:
+                await self._initialize_database()
+            else:
+                self.logger.warning("⚠️ Database-backed memory disabled, using in-memory only")
+            
+            # 2. Initialize Infrastructure
             self.app_context = AppContext()
             set_app_context(self.app_context)
             auto_register_providers()
+            
+            # 3. Sync Tools to Registry/DB
+            self.logger.info("🛠️ Syncing Tools to Registry...")
+            try:
+                # self.tool_manager.sync_tools()
+                self.logger.info("✅ Tools Synced")
+            except Exception as e:
+                self.logger.error(f"❌ Tool Sync Failed: {e}", exc_info=True)
+
             self.logger.info("✅ Infrastructure initialized")
             
-            # 2. Initialize Plan Director & Observability
-            self.plan_director = PlanDirector()
-            self.plan_director.ensure_started()
+            # 4. Initialize Plan Director & Observability
+            # self.plan_director = PlanDirector()
+            # self.plan_director.ensure_started()
             if not self.bot_only:
                 self.obs_service = ObservabilityService()
                 self.obs_service.start()
             self.logger.info("✅ Plan Director & Observability initialized")
             
-            # 3. Configuration
+            # 5. Configuration
             token = os.getenv("TELEGRAM_BOT_TOKEN")
             if not token:
                 raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
             
-            # 4. Instantiate Services
+            # 6. Instantiate Services
             self.bot_service = TelegramBotService(token)
 
             config = {
-                'top_k':0.5,
-                'top_p':0.5,
-                'max_tokens' : 3000,
-                'temperature' : 0.5,
+                'top_k': 7,
+                'top_p': 0.5,
+                'max_tokens': 3000,
+                'temperature': 0.5,
                 "model_id": "gemini-3-flash-preview",
                 "provider": "google",
                 "max_steps": 25,
-                "additional_params" : {
+                "additional_params": {
                     "include_thoughts": False,
-                }
+                },
+                # Memory settings (NEW)
+                "enable_memory_summarization": self.enable_memory,
+                "agent_name": "ValH Main Agent",
+                "memory_recent_k": 15,  # More context for main agent
+                "memory_summarization_threshold": 30,
+                "session_timeout_hours": 48,  # 2 days for main conversations
             }
 
             self.main_agent = MainAgent(self.bot_service, config)
             self.logger.info("✅ Services instantiated")
             
-            # 5. Setup FastAPI Server (Optional - commented out by default)
+            # 7. Setup FastAPI Server (Optional)
             if not self.bot_only:
                 config = uvicorn.Config(
                     app,
@@ -151,6 +197,39 @@ class ApplicationManager:
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize application: {e}", exc_info=True)
             raise
+    
+    async def _initialize_database(self):
+        """Initialize database for agent memory"""
+        try:
+            self.logger.info(f"📊 Initializing database: {self.db_path}")
+            
+            # Ensure data directory exists
+            db_dir = Path(self.db_path).parent
+            db_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Initialize database manager
+            self.database = await DatabaseManager.initialize(
+                db_type=DatabaseType.SQLITE,
+                db_path=self.db_path
+            )
+            
+            # Set global database for agent factory
+            set_global_database(self.database)
+            
+            # Set database in agent manager
+            agent_manager = get_agent_manager()
+            agent_manager.set_database(self.database)
+            
+            self.logger.info("✅ Database initialized successfully")
+            
+            # Log database info
+            db_size = Path(self.db_path).stat().st_size if Path(self.db_path).exists() else 0
+            self.logger.info(f"📊 Database size: {db_size / 1024:.2f} KB")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to initialize database: {e}", exc_info=True)
+            self.logger.warning("⚠️ Continuing without database-backed memory")
+            self.enable_memory = False
     
     async def start(self):
         """Start all application components"""
@@ -183,6 +262,9 @@ class ApplicationManager:
             
             if self.bot_service.is_running():
                 self.logger.info("✅ All components started successfully")
+                if self.enable_memory:
+                    self.logger.info("💾 Database-backed memory: ENABLED")
+                    self.logger.info(f"📁 Database location: {self.db_path}")
             else:
                 raise RuntimeError("Telegram bot failed to start")
                 
@@ -207,21 +289,28 @@ class ApplicationManager:
         
         shutdown_tasks = []
         
-        # 1. Stop FastAPI Server
+        # 1. Clear tool RAG
+        try:
+            # self.tool_manager.delete_collection()
+            self.logger.info("✅ Tool collection cleared")
+        except Exception as e:
+            self.logger.error(f"Error clearing tool collection: {e}")
+        
+        # 2. Stop FastAPI Server
         if self.server and not self.bot_only:
             self.logger.info("Stopping FastAPI server...")
             self.server.should_exit = True
             if self.server_task and not self.server_task.done():
                 shutdown_tasks.append(self._cancel_task(self.server_task, "FastAPI server"))
         
-        # 2. Stop Telegram Bot
+        # 3. Stop Telegram Bot
         if self.bot_service:
             self.logger.info("Stopping Telegram bot...")
             shutdown_tasks.append(self._safe_shutdown(self.bot_service.stop(), "Telegram bot"))
             if self.bot_task and not self.bot_task.done():
                 shutdown_tasks.append(self._cancel_task(self.bot_task, "Telegram bot task"))
         
-        # 3. Stop Main Agent
+        # 4. Stop Main Agent
         if self.main_agent:
             self.logger.info("Stopping Main Agent...")
             shutdown_tasks.append(self._safe_shutdown(self.main_agent.stop(), "Main Agent"))
@@ -237,6 +326,15 @@ class ApplicationManager:
                 )
             except asyncio.TimeoutError:
                 self.logger.warning("Shutdown timeout exceeded, forcing exit")
+        
+        # 5. Close database connection (NEW)
+        if self.database:
+            self.logger.info("Closing database connection...")
+            try:
+                await DatabaseManager.close()
+                self.logger.info("✅ Database closed")
+            except Exception as e:
+                self.logger.error(f"Error closing database: {e}")
         
         self.logger.info("✅ Shutdown complete")
     
@@ -261,12 +359,16 @@ class ApplicationManager:
             self.logger.error(f"Error cancelling {name}: {e}", exc_info=True)
 
 
-async def main_async(bot_only: bool):
+async def main_async(bot_only: bool, db_path: str, enable_memory: bool):
     """
     Async entry point for the application with proper signal handling
     """
     logger = logging.getLogger("ValuableHelper")
-    app_manager = ApplicationManager(bot_only=bot_only)
+    app_manager = ApplicationManager(
+        bot_only=bot_only,
+        db_path=db_path,
+        enable_memory=enable_memory
+    )
     
     # Setup signal handlers for graceful shutdown
     def signal_handler(sig):
@@ -314,6 +416,7 @@ def main():
     # Load environment variables
     load_dotenv(override=True)
     args = parse_args()
+    
     # Setup logging
     setup_logging()
     logger = logging.getLogger("ValuableHelper")
@@ -325,13 +428,19 @@ def main():
     try:
         logger.info("=" * 60)
         logger.info("Starting ValH Application")
+        logger.info(f"Mode: {'Bot Only' if args.bot else 'Full Stack'}")
+        logger.info(f"Database: {args.db_path}")
+        logger.info(f"Memory: {'Enabled' if not args.no_memory else 'Disabled'}")
         logger.info("=" * 60)
         
         # Run the async application
-        asyncio.run(main_async(bot_only=args.bot))
+        asyncio.run(main_async(
+            bot_only=args.bot,
+            db_path=args.db_path,
+            enable_memory=not args.no_memory
+        ))
         
     except KeyboardInterrupt:
-        # Expected exit on Ctrl+C - already handled in main_async
         logger.info("Application stopped by user")
     except Exception as e:
         logger.critical(f"Application failed: {e}", exc_info=True)

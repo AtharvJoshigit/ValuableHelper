@@ -21,7 +21,7 @@ class WebScraperTool(BaseTool):
         
         try:
             headers = {
-                "Accept": "text/event-stream" if kwargs.get("stream") else "text/plain"
+                "Accept": "text/plain"
             }
             response = requests.get(jina_url, headers=headers, timeout=20)
             response.raise_for_status()
@@ -29,7 +29,7 @@ class WebScraperTool(BaseTool):
             return {
                 "status": "success",
                 "url": url,
-                "content": response.text[:5000] + "..." if len(response.text) > 5000 else response.text,
+                "content": response.text[:10000] + "..." if len(response.text) > 10000 else response.text,
                 "length": len(response.text)
             }
         except Exception as e:
