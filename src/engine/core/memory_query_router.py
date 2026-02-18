@@ -64,7 +64,7 @@ class MemoryQueryRouter:
             # Use ChromaDB for semantic understanding
             return await repository.search_semantic(
                 agent_id=agent_id,
-                query=query,
+                query_text=query,
                 limit=limit
             )
         

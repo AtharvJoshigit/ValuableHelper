@@ -3,7 +3,6 @@
 from typing import Optional
 import logging
 import asyncio
-from pathlib import Path
 
 from engine.core.agent import Agent
 from engine.core.agent_instance_manager import AgentConfig
@@ -12,7 +11,6 @@ from engine.core.memory import Memory  # Keep for backward compatibility
 from engine.registry.tool_registry import ToolRegistry
 from engine.registry.tool_discovery import ToolDiscovery
 from database.base import BaseDatabase
-from database.db_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +82,7 @@ def create_agent(
         # NEW: Database-backed memory
         logger.info(f"Creating agent '{agent_id}' with database-backed memory")
         
+        logger.info(f"Memory Threshold {config.memory_summarization_threshold}")
         memory_manager = MemoryManager(
             db=db,
             agent_id=agent_id,

@@ -2,6 +2,8 @@
 import logging
 import asyncio
 from typing import List, Optional, Dict, Any
+from datetime import datetime
+
 from engine.core.summerizer import MemorySummarizer
 from engine.core.types import Message, Role
 from database.base import BaseDatabase
@@ -13,21 +15,16 @@ from repositories.summary_repository import HybridSummaryRepository
 logger = logging.getLogger(__name__)
 
 class MemoryManager:
-    """
-    Optimized memory manager with database backend.
-    Minimizes RAM usage by keeping only recent K messages in memory.
-    """
-    
     def __init__(
         self,
         db: BaseDatabase,
         agent_id: str,
         agent_name: Optional[str] = None,
-        recent_k: int = 10,
+        recent_k: int = 15,
         summarization_threshold: int = 20,
-        enable_summarization: bool = False,
+        enable_summarization: bool = True,
         auto_summarize: bool = True,
-        session_timeout_hours: int = 24
+        session_timeout_hours: int  = 24
     ):
         self.db = db
         self.agent_id = agent_id
@@ -36,9 +33,7 @@ class MemoryManager:
         self.summarization_threshold = summarization_threshold
         self.enable_summarization = enable_summarization
         self.auto_summarize = auto_summarize
-        self.session_timeout_hours = session_timeout_hours
         
-        # Repositories
         self.message_repo = MessageRepository(db)
         self.summary_repo = HybridSummaryRepository(
             db=db,
@@ -46,67 +41,68 @@ class MemoryManager:
         )
         self.conversation_repo = ConversationRepository(db)
         
-        # State
         self.conversation_id: Optional[str] = None
         self._sequence_counter: int = 0
+        self._original_system_prompt: Optional[str] = None
         self._summarization_lock = asyncio.Lock()
         
-        self._is_summarizing = False # safe guard for next tasks to control 
-        
-        # Lightweight cache (only recent K)
-        self._cache: List[Message] = []
-        self._cache_dirty = True
-        
-        # Summarization
         self._summarizer: Optional[MemorySummarizer] = None
         if enable_summarization:
             self._summarizer = MemorySummarizer(agent_id=agent_id)
-        
-        self.summary_repo = HybridSummaryRepository(
-            db=db,
-            vector_store=MemoryVectorStore() if enable_summarization else None
-        )
-    
+
     async def initialize(self):
-        """
-        Initialize conversation session with resumption support.
-        Will resume recent conversation if exists, otherwise create new.
-        """
+        """Initialize conversation session."""
         self.conversation_id = await self.conversation_repo.get_or_create_active_conversation(
             agent_id=self.agent_id,
-            agent_name=self.agent_name,
-            session_timeout_hours=self.session_timeout_hours
+            agent_name=self.agent_name
         )
         
-        # Get current sequence number
-        count = await self.message_repo.get_message_count(self.conversation_id)
-        self._sequence_counter = count
+        self._sequence_counter = await self.message_repo.get_message_count(self.conversation_id)
         
-        # Get conversation summary
-        summary = await self.conversation_repo.get_conversation_summary(
-            self.conversation_id
-        )
-        
-        logger.info(
-            f"✅ Memory initialized for agent {self.agent_id}\n"
-            f"  Conversation: {self.conversation_id}\n"
-            f"  Messages: {count} ({summary.get('summarized_count', 0)} summarized)\n"
-            f"  Created: {summary.get('created_at', 'unknown')}\n"
-            f"  Last active: {summary.get('updated_at', 'unknown')}"
-        )
-    
+        # Cache original system prompt
+        system_msg = await self.message_repo.get_system_message(self.conversation_id)
+        if system_msg:
+            self._original_system_prompt = system_msg.content
+
     async def add_message(self, message: Message):
-        """
-        Add message to database (not RAM).
-        This is the PRIMARY operation - everything goes to DB first.
-        """
+        """Add message with strict consecutive deduplication."""
         if not self.conversation_id:
             await self.initialize()
-        
-        # Increment sequence
+
+        # 1. Handle System Prompt Updates
+        if message.role == Role.SYSTEM:
+            # Strip any injected summary block before comparison or storage.
+            # get_history() fuses the original prompt with a summary block and returns
+            # it as the system message.  If the agent framework naively feeds that
+            # fused message back through add_message(), we must not let the injected
+            # block pollute _original_system_prompt — otherwise each cycle appends
+            # another summary on top of the previous one (the accumulation bug).
+            clean_content = self._strip_summary_injection(message.content)
+
+            # Identical clean content → nothing has changed, skip entirely.
+            if self._original_system_prompt and clean_content == self._original_system_prompt:
+                return
+
+            # Genuinely new system prompt — update cache with the CLEAN version only.
+            self._original_system_prompt = clean_content
+
+            # Persist the clean version so session resume via initialize() also loads
+            # a prompt that has no baked-in summary.
+            message = Message(role=Role.SYSTEM, content=clean_content)
+
+        # 2. Strict Consecutive Deduplication
+        # Only compare against the very last message to prevent "stuttering".
+        # Tool results are excluded from dedup — identical polling results are valid.
+        last_msg = await self.message_repo.get_last_message(self.conversation_id)
+        if last_msg:
+            is_dup_content = (last_msg.content == message.content) and (message.content is not None)
+            is_dup_role    = last_msg.role == message.role
+            if is_dup_role and is_dup_content and message.role != Role.TOOL:
+                logger.warning(f"Skipping consecutive duplicate message: {message.content[:50]}...")
+                return
+
         self._sequence_counter += 1
         
-        # Store in database immediately
         await self.message_repo.add_message(
             conversation_id=self.conversation_id,
             agent_id=self.agent_id,
@@ -114,278 +110,254 @@ class MemoryManager:
             sequence_number=self._sequence_counter
         )
         
-        # Invalidate cache
-        self._cache_dirty = True
-        
-        # Update conversation timestamp
         await self.conversation_repo.update_conversation_timestamp(self.conversation_id)
-        
-        # Check if we should trigger summarization
-        if self.enable_summarization and self.auto_summarize:
-            await self._check_and_summarize()
-    
-    async def start_fresh_conversation(self):
-        """
-        Explicitly start a new conversation (ignore session timeout).
-        Use this when user says "start over" or "new conversation".
-        """
-        # End all active conversations
-        await self.conversation_repo.end_all_conversations(self.agent_id)
-        
-        # Create new conversation
-        self.conversation_id = await self.conversation_repo.create_conversation(
-            agent_id=self.agent_id,
-            agent_name=self.agent_name
-        )
-        
-        self._sequence_counter = 0
-        self._cache = []
-        self._cache_dirty = True
-        
-        logger.info(f"✅ Started fresh conversation: {self.conversation_id}")
 
-    async def add_user_message(self, content: str):
-        """Convenience method to add user message."""
-        await self.add_message(Message(role=Role.USER, content=content))
-    
+        # 3. Trigger Summarization Check
+        # Only trigger on a completed assistant turn (no pending tool calls) so we
+        # always summarize full user→assistant cycles, never mid-chain fragments.
+        if self.enable_summarization and self.auto_summarize:
+            if message.role == Role.ASSISTANT and not message.tool_calls:
+                await self._check_and_summarize()
+
+    # Sentinel that marks the start of the injected summary block inside the fused
+    # system prompt. Must match the string used in get_history() exactly.
+    # Single source of truth — change it here and both methods stay in sync.
+    _SUMMARY_INJECTION_MARKER = "\n\n### PREVIOUS CONVERSATION CONTEXT\n"
+
+    @classmethod
+    def _strip_summary_injection(cls, content: Optional[str]) -> Optional[str]:
+        """
+        Remove the injected summary block from a (potentially fused) system prompt.
+
+        get_history() builds:
+            "<original_prompt>\\n\\n### PREVIOUS CONVERSATION CONTEXT\\n..."
+
+        If the agent framework passes that fused string back through add_message(),
+        this method returns only the clean original portion so _original_system_prompt
+        is never contaminated with summary content.
+
+        If the marker is absent the content is returned unchanged — meaning it really
+        is a fresh/new system prompt and should be stored as-is.
+        """
+        if not content:
+            return content
+        marker_pos = content.find(cls._SUMMARY_INJECTION_MARKER)
+        if marker_pos == -1:
+            return content  # No injection present — nothing to strip
+        return content[:marker_pos]
+
     async def get_history(self) -> List[Message]:
         """
-        Get optimized conversation history for LLM.
-        Structure: [System] + [Latest Summary (if exists)] + [Recent K]
-        
-        This is LAZY LOADED from DB only when needed.
+        Constructs the optimized prompt window.
+        Structure: [Fused System Prompt] + [Elastic Window of Recent Messages]
         """
         if not self.conversation_id:
             await self.initialize()
-        
-        history = []
-        
-        # 1. Get system message (if exists)
-        system_msg = await self.message_repo.get_system_message(self.conversation_id)
-        if system_msg:
-            history.append(system_msg)
-        
-        # 2. Get latest short summary (if exists and summarization enabled)
-        if self.enable_summarization:
-            short_summary = await self.summary_repo.get_latest_short_summary(
-                self.conversation_id
-            )
-            if short_summary:
-                history.append(Message(
-                    role=Role.SYSTEM,
-                    content=f"""## Previous Conversation Summary
-{short_summary}
 
-The following are the most recent messages:"""
-                ))
+        final_history = []
+
+        # --- Step 1: Construct the Fused System Prompt ---
+        system_content_parts = []
         
-        # 3. Get recent K messages from DB (use cache if valid)
-        if self._cache_dirty or not self._cache:
-            self._cache = await self.message_repo.get_recent_messages(
-                conversation_id=self.conversation_id,
-                limit=self.recent_k,
-                exclude_system=True
-            )
-            self._cache_dirty = False
+        if self._original_system_prompt:
+            system_content_parts.append(self._original_system_prompt)
+            
+        if self.enable_summarization:
+            # get_latest_short_summary always returns at most ONE row because
+            # upsert_short_summary atomically replaces on every summarization cycle.
+            summary = await self.summary_repo.get_latest_short_summary(self.conversation_id)
+            if summary:
+                # _SUMMARY_INJECTION_MARKER is the prefix _strip_summary_injection
+                # uses to detect and remove this block if the fused message is ever
+                # fed back through add_message(). Keep these two in sync.
+                summary_block = (
+                    f"{self._SUMMARY_INJECTION_MARKER}"
+                    f"The following is a compressed summary of the conversation so far. "
+                    f"Use this to maintain context without repetition:\n{summary}"
+                )
+                system_content_parts.append(summary_block)
         
-        history.extend(self._cache)
-        
-        return history
-    
-    async def get_full_history(self) -> List[Message]:
-        """Get ALL messages from database (for debugging/export)."""
-        if not self.conversation_id:
-            return []
-        
-        # This is expensive - only use for debugging
-        query = """
-            SELECT role, content, tool_calls, tool_results
-            FROM messages
-            WHERE conversation_id = ?
-            ORDER BY sequence_number ASC
+        if system_content_parts:
+            final_history.append(Message(
+                role=Role.SYSTEM,
+                content="\n".join(system_content_parts)
+            ))
+
+        # --- Step 2: Retrieve Elastic Context Window ---
+        # Fetch slightly more than recent_k to give the elastic backward-scan room.
+        buffer_limit = self.recent_k + 15
+        raw_messages = await self.message_repo.get_recent_messages(
+            conversation_id=self.conversation_id,
+            limit=buffer_limit,
+            exclude_system=True
+        )
+
+        if raw_messages:
+            valid_messages    = self._get_context_window(raw_messages, self.recent_k)
+            sanitized_messages = self._validate_conversation_pattern(valid_messages)
+            final_history.extend(sanitized_messages)
+
+        return final_history
+
+    def _get_context_window(self, messages: List[Message], target_k: int) -> List[Message]:
         """
-        rows = await self.db.fetch_all(query, (self.conversation_id,))
-        return [self.message_repo._row_to_message(row) for row in rows]
-    
+        Returns a slice of messages ending at the most recent.
+        Ensures the slice always starts at a clean USER entry point — never in the
+        middle of a tool-call chain.
+
+        Strategy (in order):
+          1. Ideal cut: messages[-target_k:]
+          2. Backward expansion: if the cut lands inside a tool chain, walk back up
+             to 10 steps to find the USER turn that opened the chain.
+          3. Forward fallback: if backward scan couldn't find a clean start, advance
+             from the ideal cut to the first USER message we find.
+          4. Last resort: return the ideal target_k slice as-is so the caller always
+             gets *something* valid rather than an empty list.
+        """
+        total = len(messages)
+        if total <= target_k:
+            return messages
+
+        cutoff_index = total - target_k
+
+        # --- Backward expansion (elastic window) ---
+        scan_limit  = max(0, cutoff_index - 10)
+        current_idx = cutoff_index
+
+        while current_idx > scan_limit:
+            msg = messages[current_idx]
+            if msg.role == Role.USER and not msg.tool_results:
+                # Clean entry point found.
+                return messages[current_idx:]
+            current_idx -= 1
+
+        # --- Forward fallback ---
+        # Backward scan couldn't find a clean USER start.  Advance from the ideal
+        # cutoff until we hit the next USER message.  This may return fewer than
+        # target_k messages, but it guarantees a coherent chain.
+        for i in range(cutoff_index, total):
+            if messages[i].role == Role.USER:
+                return messages[i:]
+
+        # --- Last resort ---
+        # No USER message anywhere in the window (e.g. first few turns are all
+        # assistant/system).  Return the ideal slice; _validate_conversation_pattern
+        # will strip any orphaned leading messages.
+        logger.warning(
+            "_get_context_window: no clean USER start found; "
+            "falling back to raw target_k slice."
+        )
+        return messages[cutoff_index:]
+
+    def _validate_conversation_pattern(self, messages: List[Message]) -> List[Message]:
+        """
+        Sanitizes the message list for LLM consumption:
+          1. Merges consecutive same-role messages into one.
+          2. Drops orphaned leading messages until the first USER turn.
+        """
+        validated = []
+        
+        for msg in messages:
+            # 1. Merge consecutive same-role messages
+            if validated and validated[-1].role == msg.role:
+                prev = validated[-1]
+                
+                if msg.content:
+                    prev.content = (prev.content or "") + "\n\n" + msg.content
+                if msg.tool_calls:
+                    prev.tool_calls = (prev.tool_calls or []) + msg.tool_calls
+                if msg.tool_results:
+                    prev.tool_results = (prev.tool_results or []) + msg.tool_results
+                
+                continue
+            
+            validated.append(msg)
+
+        # 2. Drop leading non-USER messages
+        while validated and validated[0].role != Role.USER:
+            logger.warning(f"Dropping orphaned {validated[0].role} at start of context window.")
+            validated.pop(0)
+
+        # Note on dangling tool calls (validated[-1] is ASSISTANT with tool_calls):
+        # We intentionally leave this alone.  In a streaming / agentic setup the
+        # executor layer is responsible for completing the tool loop before calling
+        # get_history() again.  Silently dropping or rewriting that message would
+        # mask a real orchestration bug.
+
+        return validated
+
     async def _check_and_summarize(self):
         """
-        Smart summarization check.
-        Only summarizes if we have enough unsummarized messages.
+        Checks if enough messages have accumulated outside the active window to
+        warrant a summarization job.
+
+        safe_threshold = recent_k + summarization_threshold ensures we never try
+        to summarize messages that are still inside the active context window.
         """
-        if self._is_summarizing: # Guard against concurrent tasks
-            return
+        count = await self.message_repo.get_unsummarized_count(self.conversation_id)
+        safe_threshold = self.recent_k + self.summarization_threshold
         
-        unsummarized_count = await self.message_repo.get_message_count(
-            conversation_id=self.conversation_id,
-            unsummarized_only=True
-        )
-        
-        print(f"Unsummarized count: {unsummarized_count}, Summerization Threshold : {self.summarization_threshold}")
-        # Need enough messages to make summarization worthwhile
-        if unsummarized_count < self.summarization_threshold:
-            return
-        
-        # Trigger async summarization (non-blocking)
-        asyncio.create_task(self._perform_summarization())
-    
+        if count >= safe_threshold:
+            task = asyncio.create_task(self._perform_summarization())
+            # Attach a callback so unhandled exceptions are logged rather than
+            # silently discarded.  Without this, asyncio only prints them at GC time.
+            task.add_done_callback(self._on_summarization_done)
+
+    @staticmethod
+    def _on_summarization_done(task: asyncio.Task):
+        """Log any exception raised by the background summarization task."""
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass  # Graceful shutdown — not an error
+        except Exception:
+            logger.exception("Background summarization task failed")
+
     async def _perform_summarization(self):
-        """
-        Perform actual summarization.
-        Runs asynchronously to not block message addition.
-        """
         async with self._summarization_lock:
-            try:
-                self._is_summarizing = True
-                if not self.conversation_id or not self._summarizer:
-                    return
-                
-                # Get messages to summarize (excluding recent K)
-                messages, start_seq, end_seq = await self.message_repo.get_unsummarized_messages(
+            messages, start_seq, end_seq = await self.message_repo.get_archivable_messages(
+                conversation_id=self.conversation_id,
+                keep_recent=self.recent_k + 5  # Safety buffer inside the lock
+            )
+            
+            if not messages:
+                return
+
+            summary_data = await self._summarizer.summarize_conversations(
+                messages, self.agent_name
+            )
+
+            if summary_data["short"]:
+                # Atomic replace: HybridSummaryRepository.upsert_short_summary deletes
+                # the old 'short' row and inserts a new one in a single transaction.
+                # This is what prevents summary accumulation in the system prompt.
+                await self.summary_repo.upsert_short_summary(
                     conversation_id=self.conversation_id,
-                    skip_recent_k=self.recent_k
+                    content=summary_data["short"],
+                    metadata=summary_data["metadata"],
+                    agent_id=self.agent_id,
+                    agent_name=self.agent_name
                 )
-                
-                if not messages:
-                    return
-                
-                logger.info(
-                    f"📝 Summarizing {len(messages)} messages "
-                    f"(seq {start_seq}-{end_seq}) for agent {self.agent_id}"
-                )
-                
-                # Generate summaries
-                summaries = await self._summarizer.summarize_conversations(
-                    messages=messages,
+
+            # Persist the detailed long-form summary for RAG recall separately.
+            if summary_data["long"]:
+                await self.summary_repo.add_summary(
+                    conversation_id=self.conversation_id,
+                    agent_id=self.agent_id,
+                    summary_type="long",
+                    content=summary_data["long"],
+                    importance=summary_data["importance"],
+                    message_start_seq=start_seq,
+                    message_end_seq=end_seq,
+                    message_count=len(messages),
+                    tags=summary_data["metadata"].get("key_topics", []),
+                    metadata=summary_data["metadata"],
                     agent_name=self.agent_name
                 )
                 
-                # Use transaction for atomicity
-                async with self.db.transaction():
-                    # Store short summary
-                    if summaries["short"]:
-                        await self.summary_repo.add_summary(
-                            conversation_id=self.conversation_id,
-                            agent_id=self.agent_id,
-                            summary_type="short",
-                            content=summaries["short"],
-                            importance=summaries["importance"],
-                            message_start_seq=start_seq,
-                            message_end_seq=end_seq,
-                            message_count=len(messages),
-                            tags=[],
-                            metadata=summaries.get("metadata", {})
-                        )
-                    
-                    # Store long summary
-                    if summaries["long"]:
-                        await self.summary_repo.add_summary(
-                            conversation_id=self.conversation_id,
-                            agent_id=self.agent_id,
-                            summary_type="long",
-                            content=summaries["long"],
-                            importance=summaries["importance"],
-                            message_start_seq=start_seq,
-                            message_end_seq=end_seq,
-                            message_count=len(messages),
-                            tags=summaries["metadata"].get("key_topics", []),
-                            metadata=summaries.get("metadata", {})
-                        )
-                    
-                    # Mark messages as summarized
-                    await self.message_repo.mark_as_summarized(
-                        conversation_id=self.conversation_id,
-                        start_seq=start_seq,
-                        end_seq=end_seq
-                    )
-                
-                logger.info(
-                    f"✅ Summarization complete for agent {self.agent_id}: "
-                    f"{len(messages)} messages, importance={summaries['importance']}"
-                )
-                
-            except Exception as e:
-                logger.error(f"❌ Summarization failed for agent {self.agent_id}: {e}", exc_info=True)
-    
-            finally:
-                self._is_summarizing = False
-                
-    async def search_summaries(
-        self,
-        query: str,
-        limit: int = 5,
-        min_importance: int = 1
-    ) -> List[Dict[str, Any]]:
-        """
-        Search historical summaries.
-        Note: This searches DB summaries, not vector embeddings.
-        """
-        if not self.conversation_id:
-            return []
-        
-        summaries = await self.summary_repo.get_all_summaries(
-            conversation_id=self.conversation_id,
-            summary_type="long",
-            min_importance=min_importance
-        )
-        
-        # Simple text matching (can be enhanced with vector search)
-        query_lower = query.lower()
-        results = []
-        
-        for summary in summaries:
-            if query_lower in summary['content'].lower():
-                results.append(summary)
-                if len(results) >= limit:
-                    break
-        
-        return results
-    
-    async def get_statistics(self) -> Dict[str, Any]:
-        """Get memory statistics."""
-        if not self.conversation_id:
-            return {}
-        
-        total_messages = await self.message_repo.get_message_count(self.conversation_id)
-        unsummarized = await self.message_repo.get_message_count(
-            self.conversation_id,
-            unsummarized_only=True
-        )
-        summaries = await self.summary_repo.get_all_summaries(self.conversation_id)
-        
-        return {
-            "agent_id": self.agent_id,
-            "conversation_id": self.conversation_id,
-            "total_messages": total_messages,
-            "unsummarized_messages": unsummarized,
-            "total_summaries": len(summaries),
-            "cache_size": len(self._cache),
-            "recent_k": self.recent_k
-        }
-    
-    async def search_memory(
-        self, 
-        query: str, 
-        limit: int = 5,
-        min_importance: int = 1
-        
-    ) -> List[Dict[str, Any]]:
-        """Smart search using query router."""
-        from engine.core.memory_query_router import MemoryQueryRouter
-        
-        router = MemoryQueryRouter()
-        return await router.route_query(
-            query=query,
-            agent_id=self.agent_id,
-            repository=self.summary_repo,
-            limit=limit
-        )
-
-    async def clear(self):
-        """Clear conversation (mark as inactive and start fresh)."""
-        if self.conversation_id:
-            await self.conversation_repo.deactivate_conversation(self.conversation_id)
-        
-        self.conversation_id = None
-        self._sequence_counter = 0
-        self._cache = []
-        self._cache_dirty = True
+            # Mark processed messages so they are excluded from future jobs.
+            await self.message_repo.mark_as_summarized(
+                conversation_id=self.conversation_id,
+                start_seq=start_seq,
+                end_seq=end_seq
+            )

@@ -1,9 +1,19 @@
-# engine/providers/google/provider.py (COMPLETE PRODUCTION-READY FIX)
+# engine/providers/google/provider.py (PRODUCTION-GRADE)
+"""
+Production-ready Google Gemini provider with robust error handling.
+
+Features:
+1. Proper retry logic for transient errors
+2. Rate limit handling
+3. Model-specific configuration
+4. Comprehensive error messages
+"""
 
 import asyncio
 import os
 import logging
 from typing import List, Optional, AsyncIterator
+import time
 
 from google import genai
 from google.genai import types as genai_types
@@ -11,14 +21,27 @@ from google.genai import types as genai_types
 from engine.core.types import Message, AgentResponse, StreamChunk
 from engine.registry.base_tool import BaseTool
 from engine.providers.base_provider import BaseProvider
-from engine.providers.google.adapter import GoogleAdapter
+from engine.providers.google.adapter import GoogleAdapter, ConversationPatternError
 
 logger = logging.getLogger(__name__)
 
+class GoogleProviderError(Exception):
+    """Base exception for Google Provider errors."""
+    pass
+
+class GoogleRateLimitError(GoogleProviderError):
+    """Raised when rate limit is hit."""
+    pass
+
 class GoogleProvider(BaseProvider):
     """
-    Production-ready Google Gemini provider implementation.
-    Supports all Gemini models including thinking/reasoning models.
+    Production Google Gemini provider with robust error handling.
+    
+    Handles:
+    - Rate limiting with exponential backoff
+    - Transient network errors
+    - Invalid conversation patterns
+    - Model-specific quirks
     """
     
     def __init__(
@@ -31,27 +54,15 @@ class GoogleProvider(BaseProvider):
         max_tokens: Optional[int] = None,
         **additional_params
     ):
-        """
-        Initialize the Google provider.
-        
-        Args:
-            model_id: Gemini model identifier
-            api_key: Google API key (or from GOOGLE_API_KEY env var)
-            temperature: Sampling temperature (0.0-2.0)
-            top_p: Nucleus sampling parameter
-            top_k: Top-k sampling parameter
-            max_tokens: Maximum output tokens
-            **additional_params: Additional config (e.g., include_thoughts)
-        """
         self.model_id = model_id
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY")
         
         if not self.api_key:
             raise ValueError(
-                "Google API key must be provided or set in GOOGLE_API_KEY environment variable."
+                "Google API key required. Set GOOGLE_API_KEY environment variable "
+                "or pass api_key parameter."
             )
         
-        # Store generation parameters
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
@@ -59,80 +70,85 @@ class GoogleProvider(BaseProvider):
         self.additional_params = additional_params
         
         # Initialize client
-        self.client = genai.Client(api_key=self.api_key)
+        self.client = genai.Client(
+            api_key=self.api_key,
+            http_options={'api_version': 'v1beta'}
+        )
+        
+        # Rate limiting
+        self._last_request_time = 0.0
+        self._min_request_interval = 0.1  # 100ms between requests
         
         logger.info(
             f"✅ Google Provider initialized: {model_id} "
-            f"(temp={temperature}, max_tokens={max_tokens})"
+            f"(temp={temperature}, max_tokens={max_tokens or 'default'})"
         )
 
-    def _build_config(self, tools: List[BaseTool]) -> genai_types.GenerateContentConfig:
-        """
-        Build generation config with proper parameter handling.
-        
-        Args:
-            tools: List of tools to include in config
-            
-        Returns:
-            GenerateContentConfig object
-        """
-        # Base config parameters
-        config_kwargs = {
+    def _build_config(
+        self, 
+        tools: List[BaseTool], 
+        system_instruction: Optional[str]
+    ) -> genai_types.GenerateContentConfig:
+        """Build generation config with all parameters."""
+        config = {
             "temperature": self.temperature,
-            "max_output_tokens": self.max_tokens,
+            "system_instruction": system_instruction,
         }
         
-        # Add optional parameters
+        # Optional parameters
+        if self.max_tokens:
+            config["max_output_tokens"] = self.max_tokens
         if self.top_p is not None:
-            config_kwargs["top_p"] = self.top_p
-        
+            config["top_p"] = self.top_p
         if self.top_k is not None:
-            config_kwargs["top_k"] = self.top_k
+            config["top_k"] = self.top_k
         
-        # Add tools if provided
+        # Convert and add tools
         if tools:
-            # Use adapter to convert tools properly
-            tool_defs = []
-            for tool in tools:
-                tool_defs.append({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.get_schema()
-                })
+            tool_defs = [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.get_schema()
+                }
+                for t in tools
+            ]
             
-            google_functions = GoogleAdapter.convert_tools(tool_defs)
+            google_funcs = GoogleAdapter.convert_tools(tool_defs)
             
-            if google_functions:
-                # Convert to FunctionDeclaration objects
-                function_declarations = [
+            if google_funcs:
+                func_declarations = [
                     genai_types.FunctionDeclaration(
-                        name=func["name"],
-                        description=func["description"],
-                        parameters=func["parameters"]
+                        name=f["name"],
+                        description=f["description"],
+                        parameters=f["parameters"]
                     )
-                    for func in google_functions
+                    for f in google_funcs
                 ]
                 
-                config_kwargs["tools"] = [
-                    genai_types.Tool(function_declarations=function_declarations)
+                config["tools"] = [
+                    genai_types.Tool(function_declarations=func_declarations)
                 ]
                 
-                # Disable automatic function calling (we handle it ourselves)
-                config_kwargs["automatic_function_calling"] = genai_types.AutomaticFunctionCallingConfig(
+                config["automatic_function_calling"] = genai_types.AutomaticFunctionCallingConfig(
                     disable=True
                 )
         
-        # Handle thinking config (for thinking models)
-        include_thoughts = self.additional_params.get("include_thoughts", False)
-        
-        if include_thoughts:
-            config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+        # Thinking config for thinking models
+        if self.additional_params.get("include_thoughts", False):
+            config["thinking_config"] = genai_types.ThinkingConfig(
                 include_thoughts=True
             )
             logger.debug(f"Thinking mode enabled for {self.model_id}")
         
-        # Create and return config
-        return genai_types.GenerateContentConfig(**config_kwargs)
+        return genai_types.GenerateContentConfig(**config)
+
+    async def _rate_limit_wait(self):
+        """Implement simple rate limiting."""
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self._min_request_interval:
+            await asyncio.sleep(self._min_request_interval - elapsed)
+        self._last_request_time = time.time()
 
     async def generate(
         self, 
@@ -140,49 +156,94 @@ class GoogleProvider(BaseProvider):
         tools: List[BaseTool] = None
     ) -> AgentResponse:
         """
-        Generate a non-streaming response from the model.
+        Generate non-streaming response with retry logic.
         
-        Args:
-            history: Conversation history
-            tools: Available tools
-            
-        Returns:
-            AgentResponse with content, tool_calls, and usage
+        Handles:
+        - Conversation pattern errors (400)
+        - Rate limiting (429)
+        - Transient network errors (500)
         """
-        if tools is None:
-            tools = []
+        tools = tools or []
         
-        # Convert history using adapter
-        contents = GoogleAdapter.convert_history(history, self.model_id)
+        # Extract system instruction
+        system_instruction = GoogleAdapter.extract_system_instruction(history)
+        
+        # Convert history with strict validation
+        try:
+            contents = GoogleAdapter.convert_history(history, self.model_id)
+        except ConversationPatternError as e:
+            logger.error(f"Invalid conversation pattern: {e}")
+            raise GoogleProviderError(
+                f"Invalid conversation pattern: {e}. "
+                "This usually means tool calls are not properly paired with responses."
+            ) from e
         
         # Build config
-        config = self._build_config(tools)
+        config = self._build_config(tools, system_instruction)
         
-        try:
-            # Run sync API in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.models.generate_content(
-                    model=self.model_id,
-                    contents=contents,
-                    config=config
+        # Retry logic for transient errors
+        max_retries = 3
+        base_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Rate limiting
+                await self._rate_limit_wait()
+                
+                # Make request
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.client.models.generate_content(
+                        model=self.model_id,
+                        contents=contents,
+                        config=config
+                    )
                 )
-            )
-            
-            # Convert response using adapter
-            agent_response = GoogleAdapter.convert_response(response, self.model_id)
-            
-            logger.debug(
-                f"Generated response: {len(agent_response.content or '')} chars, "
-                f"{len(agent_response.tool_calls)} tool calls"
-            )
-            
-            return agent_response
-            
-        except Exception as e:
-            logger.error(f"Google Provider Generate Error: {e}", exc_info=True)
-            raise RuntimeError(f"Google Provider Generate Error: {str(e)}") from e
+                
+                # Convert and return
+                return GoogleAdapter.convert_response(response, self.model_id)
+                
+            except Exception as e:
+                error_str = str(e)
+                
+                # Check error type
+                is_rate_limit = "429" in error_str or "RATE_LIMIT" in error_str
+                is_transient = any(
+                    msg in error_str for msg in [
+                        "500", "502", "503", "504",
+                        "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED"
+                    ]
+                )
+                is_invalid_argument = "400" in error_str or "INVALID_ARGUMENT" in error_str
+                
+                # Don't retry on client errors (400)
+                if is_invalid_argument:
+                    logger.error(f"Invalid request (400): {error_str}")
+                    raise GoogleProviderError(
+                        f"Invalid request to Gemini API: {error_str}\n\n"
+                        "This usually indicates:\n"
+                        "1. Function call not followed by function response\n"
+                        "2. Consecutive messages from same role\n"
+                        "3. Missing thought signature for thinking models\n"
+                        "4. Invalid conversation pattern"
+                    ) from e
+                
+                # Retry on rate limits and transient errors
+                if (is_rate_limit or is_transient) and attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"⚠️ Transient error (attempt {attempt + 1}/{max_retries}): {error_str}\n"
+                        f"   Retrying in {delay}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                
+                # All retries exhausted or non-retryable error
+                logger.error(f"Google API error: {error_str}", exc_info=True)
+                raise GoogleProviderError(f"Google API error: {error_str}") from e
+        
+        raise GoogleProviderError("Max retries exceeded")
 
     async def stream(
         self, 
@@ -190,79 +251,104 @@ class GoogleProvider(BaseProvider):
         tools: List[BaseTool] = None
     ) -> AsyncIterator[StreamChunk]:
         """
-        Stream responses from the model with proper delta handling.
+        Stream responses with proper error handling.
         
-        CRITICAL: Properly filters thought parts and yields only deltas.
-        
-        Args:
-            history: Conversation history
-            tools: Available tools
-            
-        Yields:
-            StreamChunk objects with content deltas and tool calls
+        Handles:
+        - Connection interruptions
+        - Rate limiting
+        - Pattern validation errors
         """
-        if tools is None:
-            tools = []
+        tools = tools or []
         
-        # Convert history using adapter
-        contents = GoogleAdapter.convert_history(history, self.model_id)
+        # Extract system instruction
+        system_instruction = GoogleAdapter.extract_system_instruction(history)
         
-        logger.debug(f"Sending {len(contents)} messages to Google")
+        # Convert history with strict validation
+        try:
+            contents = GoogleAdapter.convert_history(history, self.model_id)
+        except ConversationPatternError as e:
+            logger.error(f"Invalid conversation pattern: {e}")
+            yield StreamChunk(
+                content=f"\n\n❌ Error: Invalid conversation pattern: {e}"
+            )
+            raise GoogleProviderError(
+                f"Invalid conversation pattern: {e}"
+            ) from e
         
         # Build config
-        config = self._build_config(tools)
+        config = self._build_config(tools, system_instruction)
         
-        max_retries = 3
-        retry_delay = 1.5
+        # Retry logic for stream interruptions
+        max_retries = 2
         
         for attempt in range(max_retries):
             try:
-                logger.debug(f"Streaming with model: {self.model_id}")
+                # Rate limiting
+                await self._rate_limit_wait()
                 
                 # Start streaming
+                logger.debug(f"Starting stream (attempt {attempt + 1})")
                 response_iterator = await self.client.aio.models.generate_content_stream(
                     model=self.model_id,
                     contents=contents,
                     config=config
                 )
                 
-                # Process chunks
                 chunk_count = 0
+                
+                # Stream chunks
                 async for chunk in response_iterator:
+                    chunk_count += 1
                     
-                    chunk_count+=1
-                    # Use adapter to convert chunk (handles thought filtering)
-                    stream_chunk = GoogleAdapter.convert_stream_chunk(chunk, self.model_id)
+                    # Convert chunk
+                    stream_chunk = GoogleAdapter.convert_stream_chunk(
+                        chunk, 
+                        self.model_id
+                    )
                     
-                    if stream_chunk:    
+                    if stream_chunk:
                         yield stream_chunk
-                        
-                logger.debug(f"Streamed {chunk_count} chunks successfully")
-                # Successfully completed stream
-                break
+                
+                logger.debug(f"Stream completed: {chunk_count} chunks")
+                return  # Success
                 
             except Exception as e:
                 error_str = str(e)
                 
-                # Check if it's a recoverable network error
-                is_network_error = any(
-                    msg in error_str 
-                    for msg in [
-                        "IncompleteRead", 
-                        "Connection broken", 
-                        "EOF occurred",
-                        "Connection reset"
+                # Check error type
+                is_network = any(
+                    msg in error_str for msg in [
+                        "Connection", "EOF", "IncompleteRead",
+                        "Timeout", "reset"
                     ]
                 )
                 
-                if is_network_error and attempt < max_retries - 1:
-                    logger.warning(
-                        f"⚠️ Stream interrupted ({error_str}). "
-                        f"Retrying attempt {attempt + 2}/{max_retries}..."
+                is_invalid_argument = "400" in error_str or "INVALID_ARGUMENT" in error_str
+                
+                # Don't retry on client errors
+                if is_invalid_argument:
+                    logger.error(f"Invalid request (400): {error_str}")
+                    yield StreamChunk(
+                        content=f"\n\n❌ Error: Invalid request: {error_str}"
                     )
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 1.5  # Exponential backoff
+                    raise GoogleProviderError(
+                        f"Invalid request: {error_str}"
+                    ) from e
+                
+                # Retry on network errors
+                if is_network and attempt < max_retries - 1:
+                    logger.warning(
+                        f"⚠️ Stream interrupted (attempt {attempt + 1}/{max_retries}): {error_str}\n"
+                        f"   Retrying..."
+                    )
+                    await asyncio.sleep(1.0)
                     continue
-                else:
-                    logger.error(f"Google Provider Stream Error: {error_str}", exc_info=True)
-                    raise RuntimeError(f"Google Provider Stream Error: {error_str}") from e 
+                
+                # All retries exhausted
+                logger.error(f"Stream error: {error_str}", exc_info=True)
+                yield StreamChunk(
+                    content=f"\n\n❌ Error: {error_str}"
+                )
+                raise GoogleProviderError(f"Stream error: {error_str}") from e
+        
+        raise GoogleProviderError("Max stream retries exceeded")

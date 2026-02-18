@@ -47,7 +47,7 @@ class MainAgent(BaseAgent):
         }
         if config:
             default_config.update(config)
-
+        print(f"--- {default_config}")
         super().__init__(default_config)
 
         self.command_bus = get_app_context().command_bus
@@ -60,7 +60,6 @@ class MainAgent(BaseAgent):
         # Per-chat agent instances
         self._agents: Dict[int, Agent] = {}
         self._agent_ids: Dict[int, str] = {}  # Track agent IDs
-        
         # Check database availability
         self.has_database = get_global_database() is not None
         if self.has_database:
@@ -83,6 +82,20 @@ class MainAgent(BaseAgent):
         registry.register(SendTelegramMessageTool())
         registry.register(DynamicToolCreatorTool())
         registry.register(MemoryRetrievalTool())
+
+
+        discovery = ToolDiscovery()
+        tools = discovery.discover_tools(["tools"])
+        
+        registered_count = 0
+        for tool in tools:
+            try:
+                registry.register(tool)
+                registered_count += 1
+            except Exception as e:
+                logger.debug(f"Tool {tool.name} registration failed: {e}")
+        
+        logger.info(f"✅ Auto-discovered {registered_count} tools")
 
         return registry
 

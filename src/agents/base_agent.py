@@ -90,9 +90,9 @@ class BaseAgent:
             # Memory settings
             enable_memory_summarization=self.enable_memory,
             agent_name=self.agent_name or self.__class__.__name__,
-            memory_recent_k=10,
-            memory_summarization_threshold=20,
-            session_timeout_hours=24
+            memory_recent_k=self.config.get("memory_recent_k", 10),
+            memory_summarization_threshold=self.config.get("memory_summarization_threshold", 20),
+            session_timeout_hours=self.config.get("session_timeout_hours", 24)
         )
         
     def create(
@@ -147,7 +147,7 @@ class BaseAgent:
             registry=self._get_registry(),
             metadata={"created_by": self.__class__.__name__},
             set_as_current=set_as_current,
-            wait_for_init=False  # Don't block here
+            wait_for_init=False,
         )
         
         agent = manager.get_agent(identifier)

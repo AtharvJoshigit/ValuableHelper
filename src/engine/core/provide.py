@@ -34,8 +34,8 @@ def auto_register_providers():
     try:
         from engine.providers.google.provider import GoogleProvider
         register_provider("google", GoogleProvider)
-    except ImportError:
-        logger.warning("Google provider not available")
+    except ImportError as ie:
+        logger.warning(f"Google provider not available with error {ie}")
     
     try:
         from engine.providers.openai.provider import OpenAIProvider

@@ -1,10 +1,14 @@
 # main.py (UPDATED with database initialization)
 
+print("MAIN FILE LOADED")
 import argparse
+print("AFTER IMPORT 1")
 import sys
+print("AFTER IMPORT 2")
 import os
 import logging
 import asyncio
+print("AFTER IMPORT 3")
 import signal
 from typing import Optional
 from pathlib import Path
@@ -15,22 +19,26 @@ import uvicorn
 from dotenv import load_dotenv
 
 # Database imports
+print("AFTER IMPORT 4")
 from database.db_manager import DatabaseManager
+print("AFTER IMPORT 5")
 from database.base import DatabaseType
+print("AFTER IMPORT 5.1")
 from engine.core.agent_factory import set_global_database
+print("AFTER IMPORT 5.2")
 from engine.core.agent_instance_manager import get_agent_manager
-
+print("AFTER IMPORT 5.3")
 RUN_BOT_ONLY = "--bot" in sys.argv
 
 # Ensure 'src' is in the python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
-
-from infrastructure.command_bus import CommandBus
+print("AFTER IMPORT 6")
 from services.telegram_bot.bot import TelegramBotService
+print("AFTER IMPORT 7")
 from services.plan_director import PlanDirector
 from agents.main_agent import MainAgent
 from engine.core.provide import auto_register_providers
-from engine.registry.tool_manager import ToolManager
+# from engine.registry.tool_manager import ToolManager
 from server import app  # Import FastAPI app
 
 
@@ -43,7 +51,7 @@ class AFCToDebugFilter(logging.Filter):
 
 # --- Setup Logging ---
 LOG_FILE = "valh.log"
-
+print(LOG_FILE)
 def setup_logging():
     """Configure logging for the application"""
     logging.root.handlers.clear()
@@ -113,7 +121,7 @@ class ApplicationManager:
         self.bot_task: Optional[asyncio.Task] = None
         self.server: Optional[uvicorn.Server] = None
         self.server_task: Optional[asyncio.Task] = None
-        self.tool_manager = ToolManager()
+        # self.tool_manager = ToolManager()
         self.database = None
         
     async def initialize(self):
@@ -162,7 +170,7 @@ class ApplicationManager:
                 'top_k': 7,
                 'top_p': 0.5,
                 'max_tokens': 3000,
-                'temperature': 0.5,
+                'temperature': 1.0,
                 "model_id": "gemini-3-flash-preview",
                 "provider": "google",
                 "max_steps": 25,
@@ -172,8 +180,8 @@ class ApplicationManager:
                 # Memory settings (NEW)
                 "enable_memory_summarization": self.enable_memory,
                 "agent_name": "ValH Main Agent",
-                "memory_recent_k": 15,  # More context for main agent
-                "memory_summarization_threshold": 30,
+                "memory_recent_k": 20,  # More context for main agent
+                "memory_summarization_threshold": 55,
                 "session_timeout_hours": 48,  # 2 days for main conversations
             }
 
@@ -307,8 +315,8 @@ class ApplicationManager:
         if self.bot_service:
             self.logger.info("Stopping Telegram bot...")
             shutdown_tasks.append(self._safe_shutdown(self.bot_service.stop(), "Telegram bot"))
-            if self.bot_task and not self.bot_task.done():
-                shutdown_tasks.append(self._cancel_task(self.bot_task, "Telegram bot task"))
+            # if self.bot_task and not self.bot_task.done():
+            #     shutdown_tasks.append(self._cancel_task(self.bot_task, "Telegram bot task"))
         
         # 4. Stop Main Agent
         if self.main_agent:

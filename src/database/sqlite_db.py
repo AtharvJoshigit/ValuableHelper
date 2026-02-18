@@ -68,11 +68,9 @@ class SQLiteDatabase(BaseDatabase):
     
     async def fetch_one(self, query: str, params: Optional[Tuple] = None) -> Optional[Dict[str, Any]]:
         """Fetch a single row as dictionary."""
-        print(f"Fectching for query: {query} and params: {params}")
         await self._ensure_connected()
         cursor = await self._connection.execute(query, params or ())
         row = await cursor.fetchone()
-        print("---Done--")
         return dict(row) if row else None
     
     async def fetch_all(self, query: str, params: Optional[Tuple] = None) -> List[Dict[str, Any]]:

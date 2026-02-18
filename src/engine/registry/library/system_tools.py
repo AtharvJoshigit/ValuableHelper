@@ -4,7 +4,40 @@ from pydantic import Field
 from engine.registry.base_tool import BaseTool
 
 # Define constant for defaults
-DEFAULT_SAFE_COMMANDS = ["ls", "pwd", "cat", "echo", "mkdir", "python", "pip", "mv", "cp", "touch", "grep", "find", "head", "tail", "sh", "git", "rm", "uv"]
+DEFAULT_SAFE_COMMANDS = ["ls", "pwd", "cat", "echo", "mkdir", "python", "pip", "mv", "cp", "touch", "grep", "find", "head", "tail", "sh", "git", "rm", "uv",
+    "ver",                         # Windows version
+    "whoami",                      # Current user
+    "hostname",                    # Machine name
+    "systeminfo",                  # System details
+    "tasklist",                    # Running processes
+    "query user",                  # Logged-in users
+    "echo %USERNAME%",             # Username
+    "echo %COMPUTERNAME%",         # Computer name
+    "ipconfig",                    # Network configuration
+    "ipconfig /all",               # Detailed network info
+    "netstat -an",                 # Network connections
+    "netstat -ano",                # Network connections with PID
+    "arp -a",                      # ARP table
+    "route print",                 # Routing table
+    "ping 127.0.0.1",              # Loopback test
+    "nslookup google.com",          # DNS lookup
+    "wmic os get caption,version", # OS info (deprecated but safe)
+    "wmic cpu get name",            # CPU info
+    "wmic memorychip get capacity",# RAM info
+    "wmic diskdrive get model,size",# Disk info
+    "driverquery",                 # Installed drivers
+    "where python",                # Find executable
+    "set",                         # Environment variables
+    "powershell -Command Get-Date",# PowerShell read-only command
+    "powershell -Command Get-Process", # Process list (PS)
+    "powershell -Command Get-Service", # Services list
+    "powershell -Command Get-ChildItem .", # List directory
+    "type file.txt",               # Read file
+    "dir",                         # Directory listing
+    "tree",                        # Directory tree
+    "cls",                         # Clear screen
+    "help",                        # Help menu
+]
 
 class RunCommandTool(BaseTool):
     name: str = "run_command"
