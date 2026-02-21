@@ -87,11 +87,12 @@ def create_agent(
             db=db,
             agent_id=agent_id,
             agent_name=config.agent_name or agent_id,
-            recent_k=config.memory_recent_k,
+            # recent_k=config.memory_recent_k,
             summarization_threshold=config.memory_summarization_threshold,
             enable_summarization=config.enable_memory_summarization,
             auto_summarize=config.memory_auto_summarize,
-            session_timeout_hours=getattr(config, 'session_timeout_hours', 24)
+            recent_k_turns=config.memory_recent_k,
+            # session_timeout_hours=getattr(config, 'session_timeout_hours', 24)
         )
         
         agent = Agent(

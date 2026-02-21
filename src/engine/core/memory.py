@@ -5,8 +5,9 @@ Kept for backward compatibility only.
 Use engine.core.memory_manager.MemoryManager for production.
 """
 from typing import List, Optional
-from engine.core.types import Message, Role
 import logging
+
+from engine.schemas.message import Message, Role
 
 logger = logging.getLogger(__name__)
 

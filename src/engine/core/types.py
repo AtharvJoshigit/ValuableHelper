@@ -1,5 +1,7 @@
 from enum import Enum
 from typing import List, Optional, Any, Dict
+from engine.schemas.tool_result import ToolCall, ToolResult
+from engine.schemas.turn_result import TurnResult
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -11,46 +13,46 @@ class MaxStepsExceededError(AgentError):
     """Raised when the agent exceeds the maximum number of steps."""
     pass
 
-class Role(str, Enum):
-    SYSTEM = "system"
-    USER = "user"
-    ASSISTANT = "assistant"
-    TOOL = "tool"
+# class Role(str, Enum):
+#     SYSTEM = "system"
+#     USER = "user"
+#     ASSISTANT = "assistant"
+#     TOOL = "tool"
 
-class ToolCall(BaseModel):
-    model_config = ConfigDict(extra='allow')
-    id: str
-    name: str
-    agent_id: Optional[str] = None
-    # thought: Optional[bool] = None # for google
-    arguments: Dict[str, Any]
+# class ToolCall(BaseModel):
+#     model_config = ConfigDict(extra='allow')
+#     id: str
+#     name: str
+#     agent_id: Optional[str] = None
+#     # thought: Optional[bool] = None # for google
+#     arguments: Dict[str, Any]
 
-class ToolResult(BaseModel):
-    model_config = ConfigDict(extra='allow')
-    tool_call_id: str
-    agent_id: Optional[str] = None
-    result: Any
-    name: str
-    error: Optional[str] = None
+# class ToolResult(BaseModel):
+#     model_config = ConfigDict(extra='allow')
+#     tool_call_id: str
+#     agent_id: Optional[str] = None
+#     result: Any
+#     name: str
+#     error: Optional[str] = None
 
-class Message(BaseModel):
-    model_config = ConfigDict(extra='allow')
-    role: Role
-    content: Optional[str] = None
-    tool_calls: List[ToolCall] = None
-    tool_results: List[ToolResult] = None
+# class Message(BaseModel):
+#     model_config = ConfigDict(extra='allow')
+#     role: Role
+#     content: Optional[str] = None
+#     tool_calls: List[ToolCall] = None
+#     tool_results: List[ToolResult] = None
 
-class UsageMetadata(BaseModel):
-    model_config = ConfigDict(extra='allow')
-    input_tokens: int = 0
-    output_tokens: Optional[int] = 0
-    total_tokens: int = 0
+# class UsageMetadata(BaseModel):
+#     model_config = ConfigDict(extra='allow')
+#     input_tokens: int = 0
+#     output_tokens: Optional[int] = 0
+#     total_tokens: int = 0
 
-class AgentResponse(BaseModel):
-    model_config = ConfigDict(extra='allow')
-    content: Optional[str] = None
-    tool_calls: List[ToolCall] = Field(default_factory=list)
-    usage: Optional[UsageMetadata] = None
+# class AgentResponse(BaseModel):
+#     model_config = ConfigDict(extra='allow')
+#     content: Optional[str] = None
+#     tool_calls: List[ToolCall] = Field(default_factory=list)
+#     usage: Optional[UsageMetadata] = None
 
 class StreamChunk(BaseModel):
     model_config = ConfigDict(extra='allow')
@@ -58,5 +60,9 @@ class StreamChunk(BaseModel):
     tool_call: Optional[ToolCall] = None
     tool_result: Optional[ToolResult] = None
     permission_request: Optional[List[ToolCall]] = None
-    usage: Optional[UsageMetadata] = None
-    finish_reason: Optional[str] = None
+    # usage: Optional[UsageMetadata] = None
+    # finish_reason: Optional[str] = None
+    
+class TurnResultChunk(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    turn_result: Optional[TurnResult] = None

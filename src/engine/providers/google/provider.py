@@ -1,354 +1,283 @@
-# engine/providers/google/provider.py (PRODUCTION-GRADE)
 """
-Production-ready Google Gemini provider with robust error handling.
+Google (Gemini) Provider
 
-Features:
-1. Proper retry logic for transient errors
-2. Rate limit handling
-3. Model-specific configuration
-4. Comprehensive error messages
+Implements the shared provider contract:
+    call_model() → (agent_response, reasoning_text, tool_calls)
+
+thought_signature fix
+---------------------
+thought_signature is a field on types.Part, NOT on types.FunctionCall.
+types.FunctionCall has extra_forbidden — passing thought_signature to its
+constructor raises a Pydantic validation error and the bytes are silently
+dropped, which is why the 400 persists even after adding the field to ToolCall.
+
+Correct extraction:
+    part.thought_signature          ← RIGHT  (types.Part field)
+    part.function_call.thought_signature  ← WRONG (field doesn't exist)
+
+Correct reconstruction (in adapter):
+    types.Part(function_call=..., thought_signature=bytes)   ← RIGHT
+    types.FunctionCall(..., thought_signature=bytes)          ← WRONG
+
+Gemini mutual-exclusion constraint
+------------------------------------
+response_schema/response_mime_type and tools cannot be active in the same
+request. Two-mode config strategy:
+
+  TOOL MODE   (tools are loaded):
+      Omit response_schema + response_mime_type.
+      Parse AgentResponse from free text via parse_agent_response().
+
+  STRUCTURED MODE   (no tools):
+      Set response_schema + response_mime_type="application/json".
+      Model is API-enforced to return valid AgentResponse JSON.
 """
 
-import asyncio
-import os
+from __future__ import annotations
+
 import logging
-from typing import List, Optional, AsyncIterator
-import time
+import os
+from typing import Callable, List, Optional, Tuple
 
+from engine.core.turn_manager import validate_message_ordering
 from google import genai
-from google.genai import types as genai_types
+from google.genai import types
 
-from engine.core.types import Message, AgentResponse, StreamChunk
 from engine.registry.base_tool import BaseTool
-from engine.providers.base_provider import BaseProvider
-from engine.providers.google.adapter import GoogleAdapter, ConversationPatternError
+from engine.schemas.message import Message
+from engine.schemas.response import AgentResponse
+from engine.schemas.tool_result import ToolCall
+from engine.providers.google.adapter import (
+    build_google_tools,
+    validate_and_fix_history,
+    parse_agent_response,
+    pydantic_to_google_schema,
+)
 
 logger = logging.getLogger(__name__)
 
-class GoogleProviderError(Exception):
-    """Base exception for Google Provider errors."""
-    pass
+ProviderResult = Tuple[
+    Optional[AgentResponse],
+    Optional[str],
+    List[ToolCall],
+]
 
-class GoogleRateLimitError(GoogleProviderError):
-    """Raised when rate limit is hit."""
-    pass
 
-class GoogleProvider(BaseProvider):
+class GoogleProvider:
     """
-    Production Google Gemini provider with robust error handling.
-    
-    Handles:
-    - Rate limiting with exponential backoff
-    - Transient network errors
-    - Invalid conversation patterns
-    - Model-specific quirks
+    Production Google Gemini provider.
+
+    Two-mode config strategy avoids the structured-output + tools mutual-
+    exclusion 400 error. thought_signature is extracted from the correct
+    object (types.Part) and stored on ToolCall for verbatim replay.
     """
-    
+
     def __init__(
-        self, 
+        self,
         model_id: str = "gemini-2.5-flash",
         api_key: Optional[str] = None,
         temperature: float = 0.7,
+        system_instruction: str = "You are a Helpful Assistant",
         top_p: Optional[float] = None,
-        top_k: Optional[int] = None,
         max_tokens: Optional[int] = None,
-        **additional_params
-    ):
+        on_text_chunk: Optional[Callable[[str], None]] = None,
+        **additional_params,
+    ) -> None:
         self.model_id = model_id
-        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY")
-        
-        if not self.api_key:
-            raise ValueError(
-                "Google API key required. Set GOOGLE_API_KEY environment variable "
-                "or pass api_key parameter."
-            )
-        
         self.temperature = temperature
         self.top_p = top_p
-        self.top_k = top_k
         self.max_tokens = max_tokens
-        self.additional_params = additional_params
-        
-        # Initialize client
-        self.client = genai.Client(
-            api_key=self.api_key,
-            http_options={'api_version': 'v1beta'}
-        )
-        
-        # Rate limiting
-        self._last_request_time = 0.0
-        self._min_request_interval = 0.1  # 100ms between requests
-        
-        logger.info(
-            f"✅ Google Provider initialized: {model_id} "
-            f"(temp={temperature}, max_tokens={max_tokens or 'default'})"
-        )
+        self.on_text_chunk = on_text_chunk
+        self.system_instruction = system_instruction
+
+        api_key = api_key or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "Google API key required. Set GOOGLE_API_KEY or pass api_key=."
+            )
+
+        self.client = genai.Client(api_key=api_key)
+        logger.info("Google Provider initialised: model=%s", model_id)
+
+    # ------------------------------------------------------------------
+    # Config builder — two-mode strategy
+    # ------------------------------------------------------------------
 
     def _build_config(
-        self, 
-        tools: List[BaseTool], 
-        system_instruction: Optional[str]
-    ) -> genai_types.GenerateContentConfig:
-        """Build generation config with all parameters."""
-        config = {
+        self,
+        tools: List[BaseTool],
+        *,
+        tool_mode: bool,
+    ) -> types.GenerateContentConfig:
+        """
+        Build config that avoids the structured-output + tools mutual-
+        exclusion error.
+
+        tool_mode=True  → include tools, omit response_schema.
+        tool_mode=False → include response_schema, omit tools.
+        """
+        config_kwargs: dict = {
             "temperature": self.temperature,
-            "system_instruction": system_instruction,
+            "system_instruction": self.system_instruction,
         }
-        
-        # Optional parameters
-        if self.max_tokens:
-            config["max_output_tokens"] = self.max_tokens
         if self.top_p is not None:
-            config["top_p"] = self.top_p
-        if self.top_k is not None:
-            config["top_k"] = self.top_k
-        
-        # Convert and add tools
-        if tools:
-            tool_defs = [
-                {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.get_schema()
-                }
-                for t in tools
-            ]
-            
-            google_funcs = GoogleAdapter.convert_tools(tool_defs)
-            
-            if google_funcs:
-                func_declarations = [
-                    genai_types.FunctionDeclaration(
-                        name=f["name"],
-                        description=f["description"],
-                        parameters=f["parameters"]
-                    )
-                    for f in google_funcs
-                ]
-                
-                config["tools"] = [
-                    genai_types.Tool(function_declarations=func_declarations)
-                ]
-                
-                config["automatic_function_calling"] = genai_types.AutomaticFunctionCallingConfig(
-                    disable=True
-                )
-        
-        # Thinking config for thinking models
-        if self.additional_params.get("include_thoughts", False):
-            config["thinking_config"] = genai_types.ThinkingConfig(
-                include_thoughts=True
-            )
-            logger.debug(f"Thinking mode enabled for {self.model_id}")
-        
-        return genai_types.GenerateContentConfig(**config)
+            config_kwargs["top_p"] = self.top_p
+        if self.max_tokens is not None:
+            config_kwargs["max_output_tokens"] = self.max_tokens
 
-    async def _rate_limit_wait(self):
-        """Implement simple rate limiting."""
-        elapsed = time.time() - self._last_request_time
-        if elapsed < self._min_request_interval:
-            await asyncio.sleep(self._min_request_interval - elapsed)
-        self._last_request_time = time.time()
+        if tool_mode:
+            config_kwargs["tools"] = build_google_tools(tools)
+            # Do NOT set response_schema — mutual exclusion with tools.
+        else:
+            config_kwargs["response_schema"] = pydantic_to_google_schema(AgentResponse)
+            config_kwargs["response_mime_type"] = "application/json"
+            # Do NOT set tools — mutual exclusion with response_schema.
 
-    async def generate(
-        self, 
-        history: List[Message], 
-        tools: List[BaseTool] = None
-    ) -> AgentResponse:
+        return types.GenerateContentConfig(**config_kwargs)
+
+    # ------------------------------------------------------------------
+    # Public: model call
+    # ------------------------------------------------------------------
+
+    async def call_model(
+        self,
+        history: List[Message],
+        tools: Optional[List[BaseTool]] = None,
+    ) -> ProviderResult:
         """
-        Generate non-streaming response with retry logic.
-        
-        Handles:
-        - Conversation pattern errors (400)
-        - Rate limiting (429)
-        - Transient network errors (500)
+        Call Gemini and return (agent_response, reasoning_text, tool_calls).
+
+        thought_signature extraction
+        ----------------------------
+        Read from part.thought_signature (types.Part field).
+        Do NOT read from part.function_call.thought_signature — that field
+        does not exist. types.FunctionCall has extra_forbidden so passing
+        thought_signature to its constructor raises a silent validation error.
         """
-        tools = tools or []
-        
-        # Extract system instruction
-        system_instruction = GoogleAdapter.extract_system_instruction(history)
-        
-        # Convert history with strict validation
+        if tools is None:
+            tools = []
+
+        tool_mode = bool(tools)
+        print(f"tool Mode : {tool_mode}")
         try:
-            contents = GoogleAdapter.convert_history(history, self.model_id)
-        except ConversationPatternError as e:
-            logger.error(f"Invalid conversation pattern: {e}")
-            raise GoogleProviderError(
-                f"Invalid conversation pattern: {e}. "
-                "This usually means tool calls are not properly paired with responses."
-            ) from e
-        
-        # Build config
-        config = self._build_config(tools, system_instruction)
-        
-        # Retry logic for transient errors
-        max_retries = 3
-        base_delay = 1.0
-        
-        for attempt in range(max_retries):
-            try:
-                # Rate limiting
-                await self._rate_limit_wait()
-                
-                # Make request
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.client.models.generate_content(
-                        model=self.model_id,
-                        contents=contents,
-                        config=config
-                    )
-                )
-                
-                # Convert and return
-                return GoogleAdapter.convert_response(response, self.model_id)
-                
-            except Exception as e:
-                error_str = str(e)
-                
-                # Check error type
-                is_rate_limit = "429" in error_str or "RATE_LIMIT" in error_str
-                is_transient = any(
-                    msg in error_str for msg in [
-                        "500", "502", "503", "504",
-                        "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED"
-                    ]
-                )
-                is_invalid_argument = "400" in error_str or "INVALID_ARGUMENT" in error_str
-                
-                # Don't retry on client errors (400)
-                if is_invalid_argument:
-                    logger.error(f"Invalid request (400): {error_str}")
-                    raise GoogleProviderError(
-                        f"Invalid request to Gemini API: {error_str}\n\n"
-                        "This usually indicates:\n"
-                        "1. Function call not followed by function response\n"
-                        "2. Consecutive messages from same role\n"
-                        "3. Missing thought signature for thinking models\n"
-                        "4. Invalid conversation pattern"
-                    ) from e
-                
-                # Retry on rate limits and transient errors
-                if (is_rate_limit or is_transient) and attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
-                    logger.warning(
-                        f"⚠️ Transient error (attempt {attempt + 1}/{max_retries}): {error_str}\n"
-                        f"   Retrying in {delay}s..."
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                
-                # All retries exhausted or non-retryable error
-                logger.error(f"Google API error: {error_str}", exc_info=True)
-                raise GoogleProviderError(f"Google API error: {error_str}") from e
-        
-        raise GoogleProviderError("Max retries exceeded")
+            history = validate_message_ordering(history)
+            contents = validate_and_fix_history(history)
+            config = self._build_config(tools, tool_mode=tool_mode)
 
-    async def stream(
-        self, 
-        history: List[Message], 
-        tools: List[BaseTool] = None
-    ) -> AsyncIterator[StreamChunk]:
-        """
-        Stream responses with proper error handling.
-        
-        Handles:
-        - Connection interruptions
-        - Rate limiting
-        - Pattern validation errors
-        """
-        tools = tools or []
-        
-        # Extract system instruction
-        system_instruction = GoogleAdapter.extract_system_instruction(history)
-        
-        # Convert history with strict validation
-        try:
-            contents = GoogleAdapter.convert_history(history, self.model_id)
-        except ConversationPatternError as e:
-            logger.error(f"Invalid conversation pattern: {e}")
-            yield StreamChunk(
-                content=f"\n\n❌ Error: Invalid conversation pattern: {e}"
+            logger.info(f"Build config {config.response_schema}")
+            logger.info(f'Google Contents : {contents}') 
+            response = await self.client.aio.models.generate_content(
+                model=self.model_id,
+                contents=contents,
+                config=config,
             )
-            raise GoogleProviderError(
-                f"Invalid conversation pattern: {e}"
-            ) from e
-        
-        # Build config
-        config = self._build_config(tools, system_instruction)
-        
-        # Retry logic for stream interruptions
-        max_retries = 2
-        
-        for attempt in range(max_retries):
-            try:
-                # Rate limiting
-                await self._rate_limit_wait()
-                
-                # Start streaming
-                logger.debug(f"Starting stream (attempt {attempt + 1})")
-                response_iterator = await self.client.aio.models.generate_content_stream(
-                    model=self.model_id,
-                    contents=contents,
-                    config=config
-                )
-                
-                chunk_count = 0
-                
-                # Stream chunks
-                async for chunk in response_iterator:
-                    chunk_count += 1
-                    
-                    # Convert chunk
-                    stream_chunk = GoogleAdapter.convert_stream_chunk(
-                        chunk, 
-                        self.model_id
-                    )
-                    
-                    if stream_chunk:
-                        yield stream_chunk
-                
-                logger.debug(f"Stream completed: {chunk_count} chunks")
-                return  # Success
-                
-            except Exception as e:
-                error_str = str(e)
-                
-                # Check error type
-                is_network = any(
-                    msg in error_str for msg in [
-                        "Connection", "EOF", "IncompleteRead",
-                        "Timeout", "reset"
-                    ]
-                )
-                
-                is_invalid_argument = "400" in error_str or "INVALID_ARGUMENT" in error_str
-                
-                # Don't retry on client errors
-                if is_invalid_argument:
-                    logger.error(f"Invalid request (400): {error_str}")
-                    yield StreamChunk(
-                        content=f"\n\n❌ Error: Invalid request: {error_str}"
-                    )
-                    raise GoogleProviderError(
-                        f"Invalid request: {error_str}"
-                    ) from e
-                
-                # Retry on network errors
-                if is_network and attempt < max_retries - 1:
-                    logger.warning(
-                        f"⚠️ Stream interrupted (attempt {attempt + 1}/{max_retries}): {error_str}\n"
-                        f"   Retrying..."
-                    )
-                    await asyncio.sleep(1.0)
+        except Exception as exc:
+            logger.error("Google API error: %s", exc, exc_info=True)
+            return None, None, []
+
+        # ------------------------------------------------------------------
+        # Parse response parts
+        # ------------------------------------------------------------------
+        tool_calls: List[ToolCall] = []
+        reasoning_text: Optional[str] = None
+        text_parts: list[str] = []
+
+        try:
+            candidate = response.candidates[0]
+            content = candidate.content
+
+            for part in (content.parts or []):
+
+                # ── Thinking / reasoning part ───────────────────────────
+                if getattr(part, "thought", False) and part.text:
+                    reasoning_text = part.text
+                    if self.on_text_chunk:
+                        self.on_text_chunk(part.text)
                     continue
-                
-                # All retries exhausted
-                logger.error(f"Stream error: {error_str}", exc_info=True)
-                yield StreamChunk(
-                    content=f"\n\n❌ Error: {error_str}"
+
+                # ── Regular text part ───────────────────────────────────
+                if part.text and not getattr(part, "thought", False):
+                    text_parts.append(part.text)
+                    if self.on_text_chunk:
+                        self.on_text_chunk(part.text)
+                    continue
+
+                # ── Function call part ──────────────────────────────────
+                fc = getattr(part, "function_call", None)
+                if fc is None:
+                    continue
+
+                fn_name = getattr(fc, "name", "") or ""
+                if not fn_name:
+                    logger.warning("Skipping function_call with empty name: %s", part)
+                    continue
+
+                # ── thought_signature extraction ────────────────────────
+                # CORRECT: read from part.thought_signature (types.Part field).
+                # WRONG:   part.function_call.thought_signature does not exist.
+                #          types.FunctionCall has extra_forbidden — bytes
+                #          passed to its constructor are silently dropped.
+                thought_signature: Optional[bytes] = getattr(
+                    part, "thought_signature", None
                 )
-                raise GoogleProviderError(f"Stream error: {error_str}") from e
-        
-        raise GoogleProviderError("Max stream retries exceeded")
+
+                if thought_signature:
+                    logger.debug(
+                        "Captured thought_signature for tool '%s' (%d bytes)",
+                        fn_name, len(thought_signature),
+                    )
+                else:
+                    logger.debug(
+                        "No thought_signature for tool '%s' "
+                        "(non-thinking model or thinking disabled)",
+                        fn_name,
+                    )
+
+                tool_calls.append(
+                    ToolCall(
+                        name=fn_name,
+                        arguments=dict(fc.args) if fc.args else {},
+                        thought_signature=thought_signature,
+                        # id not used by Gemini, defaults to None.
+                    )
+                )
+
+        except (IndexError, AttributeError) as exc:
+            logger.error("Failed to parse Gemini response: %s", exc, exc_info=True)
+            return None, None, []
+
+        # ------------------------------------------------------------------
+        # Parse AgentResponse from text
+        # ------------------------------------------------------------------
+        agent_response: Optional[AgentResponse] = None
+
+        if not tool_calls and text_parts:
+            raw_text = "".join(text_parts)
+            agent_response = parse_agent_response(raw_text)
+
+            if agent_response is None:
+                logger.warning(
+                    "Could not parse AgentResponse from Gemini text "
+                    "(tool_mode=%s, first 200 chars): %.200s",
+                    tool_mode, raw_text,
+                )
+                # In tool_mode the model sometimes returns prose instead of
+                # JSON. Wrap it so the orchestrator has something to yield.
+                if tool_mode:
+                    agent_response = AgentResponse(
+                        response_text=raw_text,
+                        is_final=True,
+                    )
+
+        logger.debug(
+            "call_model — tool_mode=%s tool_calls=%d agent_response=%s reasoning=%s",
+            tool_mode, len(tool_calls),
+            agent_response is not None,
+            reasoning_text is not None,
+        )
+        if agent_response is None and text_parts: 
+            agent_response = AgentResponse(
+                response_text="".join(text_parts),
+                is_final=False
+            )
+        return agent_response, reasoning_text, tool_calls, response

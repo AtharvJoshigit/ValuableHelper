@@ -5,7 +5,6 @@ from typing import List, Optional
 from app.app_context import get_app_context
 from engine.core.types import ToolCall, ToolResult
 from engine.registry.tool_registry import ToolRegistry
-from infrastructure.event_bus import EventBus
 from domain.event import Event, EventType
 
 logger = logging.getLogger(__name__)
@@ -66,7 +65,11 @@ class ExecutionEngine:
 
         try:
             tool = self.registry.get_tool(call.name)
-            
+            logger.info(
+                "Executing tool: %s(%s)",
+                call.name,
+                call.arguments,
+            )
             # 1. Check if the tool has an explicit execute_async method
             if hasattr(tool, "execute_async") and inspect.iscoroutinefunction(tool.execute_async):
                 result = await asyncio.wait_for(
@@ -99,10 +102,12 @@ class ExecutionEngine:
                 ))
 
             return ToolResult(
-                tool_call_id=call.id,
-                name=call.name,
-                result=result
-            )
+                    name=call.name,
+                    id=call.id,
+                    result=result,
+                    is_error=False,
+                    error_message=None,
+                )
 
         except asyncio.TimeoutError:
             error_msg = f"Tool {call.name} timed out after {timeout}s"
@@ -120,11 +125,12 @@ class ExecutionEngine:
                 ))
 
             return ToolResult(
-                tool_call_id=call.id,
-                name=call.name,
-                result=error_msg,
-                error=error_msg
-            )
+                    name=call.name,
+                    id=call.call_id,
+                    result=None,
+                    is_error=True,
+                    error_message=str(error_msg),
+                )
 
         except Exception as e:
             error_msg = f"Error executing tool {call.name}: {e}"
@@ -136,13 +142,14 @@ class ExecutionEngine:
                     payload={
                         "tool_call_id": call.id,
                         "tool_name": call.name,
-                        "error": str(e)
+                        "error": str(error_msg)
                     }
                 ))
 
             return ToolResult(
-                tool_call_id=call.id,
-                name=call.name,
-                result=error_msg,
-                error=str(e)
-            )
+                    name=call.name,
+                    call_id=call.id,
+                    result=None,
+                    is_error=True,
+                    error_message=str(error_msg),
+                )

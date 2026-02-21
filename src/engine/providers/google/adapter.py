@@ -1,291 +1,305 @@
-# engine/providers/google/adapter.py
 """
-Production-hardened Google Gemini adapter.
-Enforces strict sequence: (user) -> (model: thought? + call?) -> (user: response) -> (model)
+Google Adapter
+
+Converts between the provider-agnostic Pydantic layer and the Gemini API
+wire format (google.genai types).
+
+thought_signature reconstruction fix
+--------------------------------------
+thought_signature is a field on types.Part, NOT on types.FunctionCall.
+types.FunctionCall has extra_forbidden — setting thought_signature on it
+raises a Pydantic validation error and the bytes are silently dropped,
+causing Gemini to return:
+
+    400 Function call is missing a thought_signature in functionCall parts.
+
+Correct reconstruction pattern:
+    types.Part(
+        function_call=types.FunctionCall(name=..., args=...),
+        thought_signature=tc.thought_signature,   ← on Part, not FunctionCall
+    )
+
+Schema handling
+---------------
+pydantic_to_google_schema() inlines all $defs/$ref entries before sending to
+Gemini. Gemini does not support JSON Schema $ref — it causes silent mismatches
+or 400 errors.
+
+anyOf with null (Pydantic's Optional encoding) is unwrapped to the non-null
+branch in _json_schema_to_gemini_schema().
 """
 
+from __future__ import annotations
+
+import copy
 import json
 import logging
-from typing import List, Dict, Any, Optional, Union
-from copy import deepcopy
+import re
+from typing import Any, Dict, List, Optional, Type
 
-from google.genai import types as genai_types
-from engine.core.types import (
-    Message, Role, ToolCall, AgentResponse, UsageMetadata, StreamChunk
-)
+from google.genai import types
+
+from engine.registry.base_tool import BaseTool
+from engine.schemas.message import Message, MessageKind, Role
+from engine.schemas.response import AgentResponse
+from engine.schemas.tool_result import ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
-class ConversationPatternError(Exception):
-    """Raised when conversation pattern violates Gemini's finite state machine."""
-    pass
+_MARKDOWN_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
-class GoogleAdapter:
-    """Production adapter with strict Gemini conversation pattern validation."""
 
-    THINKING_MODELS = {
-        'gemini-2.0-flash-thinking-exp',
-        'gemini-2.0-flash-thinking-exp-1219',
-        'gemini-exp-1206',
-        'gemini-3-flash-preview',
-        'gemini-3-pro-preview'
+# ---------------------------------------------------------------------------
+# Pydantic schema → Gemini response_schema
+# ---------------------------------------------------------------------------
+
+def pydantic_to_google_schema(model: Type[Any]) -> Dict[str, Any]:
+    """
+    Convert a Pydantic model class to a Gemini-compatible response_schema.
+
+    Gemini does not support $ref / $defs — inlines all references first.
+    Strips fields Gemini's validator rejects (title, default, examples, etc.).
+    """
+    raw_schema = model.model_json_schema()
+    defs = raw_schema.pop("$defs", {})
+    inlined = _inline_refs(raw_schema, defs)
+    _clean_for_gemini(inlined)
+    return inlined
+
+
+def _inline_refs(schema: Any, defs: Dict[str, Any]) -> Any:
+    """Recursively replace all $ref pointers with inlined copies."""
+    if isinstance(schema, dict):
+        if "$ref" in schema:
+            ref_name = schema["$ref"].split("/")[-1]
+            if ref_name in defs:
+                return _inline_refs(copy.deepcopy(defs[ref_name]), defs)
+            logger.warning("Unknown $ref: %s", schema["$ref"])
+            return schema
+        return {k: _inline_refs(v, defs) for k, v in schema.items()}
+    if isinstance(schema, list):
+        return [_inline_refs(item, defs) for item in schema]
+    return schema
+
+
+def _clean_for_gemini(schema: Any) -> None:
+    """Recursively remove fields Gemini's schema parser does not accept."""
+    if not isinstance(schema, dict):
+        return
+    for key in ("title", "default", "examples", "additionalProperties"):
+        schema.pop(key, None)
+    for v in schema.get("properties", {}).values():
+        _clean_for_gemini(v)
+    if "items" in schema:
+        _clean_for_gemini(schema["items"])
+    for combiner in ("anyOf", "oneOf", "allOf"):
+        for sub in schema.get(combiner, []):
+            _clean_for_gemini(sub)
+
+
+# ---------------------------------------------------------------------------
+# AgentResponse parser
+# ---------------------------------------------------------------------------
+
+def parse_agent_response(text: str) -> Optional[AgentResponse]:
+    """
+    Parse Gemini free-text output into an AgentResponse.
+
+    Handles pure JSON, JSON in markdown fences, and JSON embedded in prose.
+    """
+    raw = text.strip()
+    if not raw:
+        return None
+
+    # Try markdown fence first.
+    match = _MARKDOWN_JSON_RE.search(raw)
+    candidate = match.group(1) if match else None
+
+    # Fall back to first {...} block.
+    if not candidate:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end > start:
+            candidate = raw[start:end + 1]
+
+    if not candidate:
+        return None
+
+    try:
+        data = json.loads(candidate)
+        return AgentResponse.model_validate(data)
+    except json.JSONDecodeError as exc:
+        logger.warning("parse_agent_response: JSON parse failed — %s", exc)
+    except Exception as exc:
+        logger.warning("parse_agent_response: Pydantic validation failed — %s", exc)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Tool definition → Gemini tools format
+# ---------------------------------------------------------------------------
+
+def build_google_tools(tools: List[BaseTool]) -> List[types.Tool]:
+    declarations = []
+    for tool in tools:
+        schema = tool.get_schema()
+        properties = schema.get("properties", {})
+        required = schema.get("required", list(properties.keys()))
+
+        declarations.append(
+            types.FunctionDeclaration(
+                name=tool.name,
+                description=tool.description or f"Executes {tool.name}",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        k: _json_schema_to_gemini_schema(v)
+                        for k, v in properties.items()
+                    },
+                    required=required,
+                ),
+            )
+        )
+
+    return [types.Tool(function_declarations=declarations)]
+
+
+def _json_schema_to_gemini_schema(schema: Dict[str, Any]) -> types.Schema:
+    """Convert a JSON Schema property dict to types.Schema."""
+    type_map = {
+        "string":  types.Type.STRING,
+        "integer": types.Type.INTEGER,
+        "number":  types.Type.NUMBER,
+        "boolean": types.Type.BOOLEAN,
+        "array":   types.Type.ARRAY,
+        "object":  types.Type.OBJECT,
     }
 
-    @staticmethod
-    def is_thinking_model(model_id: str) -> bool:
-        return (
-            model_id in GoogleAdapter.THINKING_MODELS or
-            'thinking' in model_id.lower() or
-            model_id.startswith('gemini-exp-')
-        )
+    # Unwrap Optional (anyOf with a null branch).
+    if "anyOf" in schema:
+        non_null = [s for s in schema["anyOf"] if s.get("type") != "null"]
+        if non_null:
+            return _json_schema_to_gemini_schema(non_null[0])
 
-    @staticmethod
-    def convert_tools(tools_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        google_functions = []
-        for tool in tools_data:
-            try:
-                params = deepcopy(tool.get("parameters", {}))
-                GoogleAdapter._clean_schema_recursive(params)
-                google_functions.append({
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "parameters": params
-                })
-            except Exception as e:
-                logger.error(f"Failed to convert tool '{tool.get('name')}': {e}")
-        return google_functions
+    schema_type = type_map.get(schema.get("type", "string"), types.Type.STRING)
+    kwargs: dict = {"type": schema_type}
 
-    @staticmethod
-    def _clean_schema_recursive(schema: Dict[str, Any]) -> None:
-        if not isinstance(schema, dict):
-            return
-        # Gemini's JSON schema subset is strict
-        for field in ["title", "$schema", "additionalProperties", "$defs", "definitions", "allOf", "anyOf", "oneOf"]:
-            schema.pop(field, None)
-        
-        for key, value in list(schema.items()):
-            if isinstance(value, dict):
-                GoogleAdapter._clean_schema_recursive(value)
-            elif isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict):
-                        GoogleAdapter._clean_schema_recursive(item)
+    if "description" in schema:
+        kwargs["description"] = schema["description"]
+    if "enum" in schema:
+        kwargs["enum"] = schema["enum"]
+    if schema_type == types.Type.ARRAY and "items" in schema:
+        kwargs["items"] = _json_schema_to_gemini_schema(schema["items"])
+    if schema_type == types.Type.OBJECT and "properties" in schema:
+        kwargs["properties"] = {
+            k: _json_schema_to_gemini_schema(v)
+            for k, v in schema["properties"].items()
+        }
+        if "required" in schema:
+            kwargs["required"] = schema["required"]
 
-    @staticmethod
-    def extract_system_instruction(history: List[Message]) -> Optional[str]:
-        system_msgs = [m.content for m in history if m.role == Role.SYSTEM and m.content]
-        return "\n\n".join(system_msgs) if system_msgs else None
+    return types.Schema(**kwargs)
 
-    @staticmethod
-    def convert_history(history: List[Message], model_id: str) -> List[Dict[str, Any]]:
-        is_thinking = GoogleAdapter.is_thinking_model(model_id)
-        
-        # 1. Initial conversion
-        google_history = GoogleAdapter._convert_messages_to_parts(history, is_thinking)
-        
-        # 2. Pattern Enforcement (Merging, Placeholders, Call/Response alignment)
-        google_history = GoogleAdapter._enforce_gemini_pattern(google_history, is_thinking)
-        
-        # 3. Final safety validation
-        GoogleAdapter._validate_final_pattern(google_history)
-        
-        return google_history
 
-    @staticmethod
-    def _convert_messages_to_parts(history: List[Message], is_thinking: bool) -> List[Dict[str, Any]]:
-        google_history = []
-        for msg in history:
-            if msg.role == Role.SYSTEM:
+# ---------------------------------------------------------------------------
+# History builder: Pydantic Messages → Gemini contents list
+# ---------------------------------------------------------------------------
+
+def validate_and_fix_history(messages: List[Message]) -> List[types.Content]:
+    """
+    Convert Pydantic Messages to Gemini types.Content objects.
+
+    Reconstruction rules
+    --------------------
+    MODEL + TOOL_CALL  → role="model", parts=[Part(function_call=..., thought_signature=...)]
+                         thought_signature set on Part (NOT on FunctionCall).
+    USER + TOOL_RESULT → role="user",  parts=[Part(function_response=...)]
+    MODEL text         → role="model", parts=[Part(text=...)]
+    USER text          → role="user",  parts=[Part(text=...)]
+    """
+    contents: List[types.Content] = []
+
+    for msg in messages:
+        
+        logger.info(f"Message Kind: {msg.kind}")
+        # ── Model tool-call turn ────────────────────────────────────────
+        if msg.role == Role.MODEL and msg.kind == MessageKind.TOOL_CALL:
+            parts: List[types.Part] = []
+            if msg._raw_provider_content:
+                contents.append(msg._raw_provider_content)
                 continue
-            
+            if hasattr(msg, ' thought_text') and msg.thought_text:
+                parts.append(types.Part(thought=True, text=msg.thought_text))
+
+            for tc in (msg.tool_calls or []):
+                # Reconstruct the Part.
+                # CRITICAL: thought_signature goes on types.Part, not on
+                # types.FunctionCall. FunctionCall has extra_forbidden —
+                # setting thought_signature there raises a silent error and
+                # Gemini never receives the signature, causing the 400.
+                part_kwargs: dict = {
+                    "function_call": types.FunctionCall(
+                        name=tc.name,
+                        args=tc.arguments,
+                    ),
+                }
+
+                if tc.thought_signature is not None:
+                    part_kwargs["thought_signature"] = tc.thought_signature
+                    logger.debug(
+                        "Replaying thought_signature for '%s' (%d bytes)",
+                        tc.name, len(tc.thought_signature),
+                    )
+                else:
+                    logger.debug(
+                        "No thought_signature to replay for '%s' "
+                        "(non-thinking model or first call)",
+                        tc.name,
+                    )
+
+                parts.append(types.Part(**part_kwargs))
+
+            if parts:
+                contents.append(types.Content(role="model", parts=parts))
+            continue
+
+        # ── Tool result turn ────────────────────────────────────────────
+        if msg.kind == MessageKind.TOOL_RESULT:
             parts = []
-            
-            # Text content
-            if msg.content and msg.content.strip():
-                parts.append(genai_types.Part(
-                    text=msg.content.strip(),
-                    thought=is_thinking if msg.role == Role.ASSISTANT else False
-                ))
-            
-            # Tool calls (Assistant)
-            if msg.tool_calls:
-                for tc in msg.tool_calls:
-                    args = GoogleAdapter._prepare_args(tc.arguments)
-                    parts.append(genai_types.Part(
-                        function_call=genai_types.FunctionCall(name=tc.name, args=args),
-                        thought=is_thinking
-                    ))
-            
-            # Tool results (User)
-            if msg.tool_results:
-                for tr in msg.tool_results:
-                    result_data = GoogleAdapter._prepare_result(tr.result)
-                    parts.append(genai_types.Part(
-                        function_response={"name": tr.name, "response": result_data}
-                    ))
+            for tr in (msg.tool_results or []):
+                parts.append(
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=tr.name,
+                            response={
+                                "result": tr.result,
+                                "is_error": tr.is_error,
+                            },
+                        )
+                    )
+                )
+            if parts:
+                contents.append(types.Content(role="user", parts=parts))
+            continue
 
-            if not parts:
+        # ── Plain model text ────────────────────────────────────────────
+        if msg.role == Role.MODEL:
+            if msg._raw_provider_content:
+                contents.append(msg._raw_provider_content)
                 continue
-            
-            role = "model" if msg.role == Role.ASSISTANT else "user"
-            google_history.append({"role": role, "parts": parts})
-        
-        return google_history
+            text = msg.text or ""
+            if text:
+                contents.append(
+                    types.Content(role="model", parts=[types.Part(text=text)])
+                )
+            continue
 
-    @staticmethod
-    def _enforce_gemini_pattern(history: List[Dict[str, Any]], is_thinking: bool) -> List[Dict[str, Any]]:
-        if not history:
-            return []
-
-        # Step A: Merge consecutive same-role messages
-        merged = []
-        for msg in history:
-            if merged and merged[-1]["role"] == msg["role"]:
-                merged[-1]["parts"].extend(msg["parts"])
-            else:
-                merged.append(msg)
-
-        # Step B: Handle "Orphaned" tool responses (Truncation safety)
-        # If the first message is a User message containing function_responses, 
-        # it MUST be preceded by a Model message with function_calls. 
-        # If history was truncated, we drop these responses to prevent 400 errors.
-        if merged and merged[0]["role"] == "user":
-            merged[0]["parts"] = [
-                p for p in merged[0]["parts"] 
-                if getattr(p, 'function_response', None) is None
-            ]
-            if not merged[0]["parts"]:
-                merged.pop(0)
-
-        # Step C: Alternating Roles & Start/End Constraints
-        if not merged: return []
-        
-        # Must start with User
-        if merged[0]["role"] != "user":
-            merged.insert(0, {"role": "user", "parts": [genai_types.Part(text="Continuing conversation...")]})
-
-        fixed = [merged[0]]
-        for i in range(1, len(merged)):
-            prev = fixed[-1]
-            curr = merged[i]
-            
-            if curr["role"] == prev["role"]:
-                placeholder_role = "model" if prev["role"] == "user" else "user"
-                placeholder_text = "[System: flow correction]"
-                part = genai_types.Part(text=placeholder_text)
-                if placeholder_role == "model" and is_thinking:
-                    part.thought = True
-                
-                fixed.append({"role": placeholder_role, "parts": [part]})
-            
-            fixed.append(curr)
-
-        # Step D: Cannot end with a function call (must wait for user response)
-        if fixed and GoogleAdapter._has_function_calls(fixed[-1]["parts"]):
-            logger.warning("Dangling function call detected at tail; removing to prevent API error.")
-            fixed[-1]["parts"] = [p for p in fixed[-1]["parts"] if getattr(p, 'function_call', None) is None]
-            if not fixed[-1]["parts"]:
-                fixed.pop()
-
-        return fixed
-
-    @staticmethod
-    def _has_function_calls(parts: List[Any]) -> bool:
-        return any(getattr(p, "function_call", None) is not None for p in parts)
-
-    @staticmethod
-    def _validate_final_pattern(history: List[Dict[str, Any]]) -> None:
-        if not history: return
-        if history[0]["role"] != "user":
-            raise ConversationPatternError("Must start with user")
-        for i in range(len(history) - 1):
-            if history[i]["role"] == history[i+1]["role"]:
-                raise ConversationPatternError(f"Consecutive {history[i]['role']} at {i}")
-        if GoogleAdapter._has_function_calls(history[-1]["parts"]):
-            raise ConversationPatternError("Cannot end with function_call")
-
-    @staticmethod
-    def _prepare_args(arguments: Any) -> Dict[str, Any]:
-        if isinstance(arguments, dict): return arguments
-        try:
-            parsed = json.loads(arguments)
-            return parsed if isinstance(parsed, dict) else {"value": parsed}
-        except:
-            return {"raw_input": str(arguments)}
-
-    @staticmethod
-    def _prepare_result(result: Any) -> Dict[str, Any]:
-        if isinstance(result, dict): return result
-        return {"result": result}
-
-    @staticmethod
-    def convert_response(response: Any, model_id: str) -> AgentResponse:
-        is_thinking = GoogleAdapter.is_thinking_model(model_id)
-        content_parts, tool_calls = [], []
-        
-        if not response.candidates:
-            return AgentResponse(content="Error: No response candidates")
-        
-        candidate = response.candidates[0]
-        if hasattr(candidate, 'finish_reason') and 'SAFETY' in str(candidate.finish_reason):
-            return AgentResponse(content="⚠️ Blocked by safety filters.")
-
-        if candidate.content and candidate.content.parts:
-            for part in candidate.content.parts:
-                # Log/Process thoughts but don't return as final content
-                if is_thinking and getattr(part, 'thought', False):
-                    continue
-                if hasattr(part, 'text') and part.text:
-                    content_parts.append(part.text)
-                if hasattr(part, 'function_call') and part.function_call:
-                    fc = part.function_call
-                    tool_calls.append(ToolCall(id=fc.name, name=fc.name, arguments=dict(fc.args or {})))
-
-        usage = None
-        if hasattr(response, 'usage_metadata'):
-            um = response.usage_metadata
-            usage = UsageMetadata(
-                input_tokens=getattr(um, 'prompt_token_count', 0),
-                output_tokens=getattr(um, 'candidates_token_count', 0),
-                total_tokens=getattr(um, 'total_token_count', 0)
+        # ── User text ───────────────────────────────────────────────────
+        text = msg.text or ""
+        if text:
+            contents.append(
+                types.Content(role="user", parts=[types.Part(text=text)])
             )
 
-        return AgentResponse(
-            content="".join(content_parts).strip() or None,
-            tool_calls=tool_calls,
-            usage=usage
-        )
-    
-    @staticmethod
-    def convert_stream_chunk(chunk: Any, model_id: str) -> Optional[StreamChunk]:
-        """Convert stream chunk - filters thoughts for thinking models."""
-        is_thinking = GoogleAdapter.is_thinking_model(model_id)
-        
-        if not chunk.candidates or not chunk.candidates[0].content:
-            return None
-        
-        parts = chunk.candidates[0].content.parts
-        if not parts:
-            return None
-        
-        stream_chunk = StreamChunk()
-        
-        for part in parts:
-            # Skip thought parts
-            if is_thinking and hasattr(part, 'thought') and part.thought:
-                continue
-            
-            # Extract text delta
-            if hasattr(part, 'text') and part.text:
-                stream_chunk.content = part.text
-            
-            # Extract function call
-            if hasattr(part, 'function_call') and part.function_call:
-                fc = part.function_call
-                stream_chunk.tool_call = ToolCall(
-                    id=fc.name,
-                    name=fc.name,
-                    arguments=dict(fc.args) if fc.args else {}
-                )
-        
-        return stream_chunk if (stream_chunk.content or stream_chunk.tool_call) else None
+    return contents

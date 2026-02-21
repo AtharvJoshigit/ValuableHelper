@@ -1,305 +1,340 @@
-# engine/providers/openai/provider.py
+"""
+OpenAI Provider
 
-import asyncio
+Provider contract (shared with all providers):
+    call_model() → (agent_response, reasoning_text, tool_calls)
+
+    agent_response — Parsed AgentResponse, or None when model called a tool,
+                     or None on error (orchestrator gets an error description
+                     via the tool_calls list in that case).
+    reasoning_text — Accumulated reasoning tokens (o-series), or None.
+    tool_calls     — List[ToolCall] parsed into provider-agnostic Pydantic
+                     objects. Carries ToolCall.id for OpenAI history replay.
+                     May contain synthetic error entries if argument parsing
+                     failed — the orchestrator returns these to the model.
+
+Design notes
+------------
+* raw_provider_content is NOT used. Tool call ids are stored on ToolCall.id
+  and the adapter reconstructs assistant messages from pure Pydantic models.
+
+* Structured Outputs (response_format=json_schema) are toggleable via
+  supports_structured_output. Disable this when pointing at Gemini via the
+  OpenAI-compatible endpoint — Gemini does not support strict=True and will
+  return a 400.
+
+* o-series parameters (reasoning_effort) are only forwarded when the model
+  id starts with "o" — other models reject them.
+
+* Stream tool call buffers use lists rather than string concatenation so
+  "".join() is used at the end (more memory-efficient in tight async loops).
+
+* Malformed tool call arguments are NOT silently dropped. A synthetic error
+  ToolResult is returned to the orchestrator which feeds it back to the model
+  so it can self-correct.
+"""
+
+from __future__ import annotations
+
 import json
-import os
 import logging
-from typing import List, Optional, AsyncIterator
+import os
+from typing import Callable, List, Optional, Tuple
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessage
+from openai.types.chat.chat_completion_message_tool_call import (
+    ChatCompletionMessageToolCall,
+    Function,
+)
 
-from engine.core.types import Message, AgentResponse, StreamChunk, ToolCall
 from engine.registry.base_tool import BaseTool
-from engine.providers.base_provider import BaseProvider
-from engine.providers.openai.adapter import OpenAIAdapter
+from engine.schemas.message import Message
+from engine.schemas.response import AgentResponse
+from engine.schemas.tool_result import ToolCall
+from engine.providers.openai.adapter import (
+    build_openai_tools,
+    validate_and_fix_history,
+    StreamingJsonTextExtractor,
+    AgentResponseParseError,
+    pydantic_to_openai_response_format,
+)
 
 logger = logging.getLogger(__name__)
 
-class OpenAIProvider(BaseProvider):
+# Parameters safe to forward to the completions endpoint.
+# Constructor-level keys (base_url) and model-specific keys are handled
+# separately — see _build_call_kwargs.
+_SAFE_COMPLETION_PARAMS = frozenset({
+    "frequency_penalty",
+    "logit_bias",
+    "logprobs",
+    "n",
+    "presence_penalty",
+    "seed",
+    "stop",
+    "stream_options",
+    "top_logprobs",
+    "user",
+})
+
+# o-series models accept reasoning_effort; standard models reject it.
+_O_SERIES_PARAMS = frozenset({"reasoning_effort"})
+
+# Provider contract return type.
+ProviderResult = Tuple[
+    Optional[AgentResponse],   # parsed structured response (or None)
+    Optional[str],             # reasoning text (or None)
+    List[ToolCall],            # pre-parsed provider-agnostic tool calls
+]
+
+
+class OpenAIProvider:
     """
-    Production-ready OpenAI provider implementation.
-    Supports all OpenAI models with streaming and tool calls.
+    Production OpenAI provider.
+
+    Parameters
+    ----------
+    model_id:
+        Any OpenAI model string, or a Gemini model string when base_url
+        points at the Gemini OpenAI-compatible endpoint.
+    supports_structured_output:
+        Set False for models that do not support OpenAI Structured Outputs
+        (e.g. Gemini via OpenAI-compatible endpoint, older GPT models).
+        When False, response_format is omitted entirely.
     """
-    
+
     def __init__(
-        self, 
-        model_id: str = "gpt-4-turbo-preview",
+        self,
+        model_id: str = "gpt-4o",
         api_key: Optional[str] = None,
         temperature: float = 0.7,
+        system_instruction: str = "You are a Helpful Assistant",
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        frequency_penalty: Optional[float] = None,
-        presence_penalty: Optional[float] = None,
-        **additional_params
-    ):
-        """
-        Initialize the OpenAI provider.
-        
-        Args:
-            model_id: OpenAI model identifier (gpt-4, gpt-3.5-turbo, etc.)
-            api_key: OpenAI API key (or from OPENAI_API_KEY env var)
-            temperature: Sampling temperature (0.0-2.0)
-            top_p: Nucleus sampling parameter
-            max_tokens: Maximum output tokens
-            frequency_penalty: Penalize frequent tokens (-2.0 to 2.0)
-            presence_penalty: Penalize new tokens (-2.0 to 2.0)
-        """
+        on_text_chunk: Optional[Callable[[str], None]] = None,
+        supports_structured_output: bool = True,
+        **additional_params,
+    ) -> None:
         self.model_id = model_id
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        
-        if not self.api_key:
-            raise ValueError(
-                "OpenAI API key must be provided or set in OPENAI_API_KEY environment variable."
-            )
-        
-        # Store generation parameters
-        self.temperature = max(temperature, 0.3)  # Minimum 0.3 to avoid repetition
+        self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
-        self.frequency_penalty = frequency_penalty or 0.0
-        self.presence_penalty = presence_penalty or 0.0
-        self.additional_params = additional_params
-        
-        # Initialize client
-        self.client = AsyncOpenAI(
-            api_key=self.api_key,
-            base_url="https://integrate.api.nvidia.com/v1"
+        self.on_text_chunk = on_text_chunk
+        self.system_instruction = system_instruction
+        self.supports_structured_output = supports_structured_output
+
+        # Determine whether this looks like an o-series model so we know
+        # whether to forward reasoning_effort.
+        self._is_o_series = model_id.startswith("o")
+
+        # Filter to params safe for the completions endpoint.
+        safe_keys = _SAFE_COMPLETION_PARAMS | (_O_SERIES_PARAMS if self._is_o_series else set())
+        self.additional_params = {
+            k: v for k, v in additional_params.items() if k in safe_keys
+        }
+
+        api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OpenAI API key required. Set OPENAI_API_KEY or pass api_key=."
             )
-        
-        logger.info(
-            f"✅ OpenAI Provider initialized: {model_id} "
-            f"(temp={self.temperature}, max_tokens={max_tokens})"
+
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=additional_params.get("base_url"),
         )
 
-    def _build_request_params(
-        self, 
-        messages: List[dict],
-        tools: List[BaseTool]
-    ) -> dict:
-        """Build request parameters for OpenAI API."""
-        params = {
+        logger.info(
+            "OpenAI Provider initialised: model=%s temperature=%s "
+            "max_tokens=%s structured_output=%s o_series=%s",
+            model_id, temperature,
+            max_tokens or "default",
+            supports_structured_output,
+            self._is_o_series,
+        )
+
+    # ------------------------------------------------------------------
+    # Config builder
+    # ------------------------------------------------------------------
+
+    def _build_call_kwargs(self, tools: List[BaseTool]) -> dict:
+        kwargs: dict = {
             "model": self.model_id,
-            "messages": messages,
             "temperature": self.temperature,
-            "frequency_penalty": self.frequency_penalty,
-            "presence_penalty": self.presence_penalty,
         }
-        
-        # Add optional parameters
+
         if self.top_p is not None:
-            params["top_p"] = self.top_p
-        
+            kwargs["top_p"] = self.top_p
         if self.max_tokens is not None:
-            params["max_tokens"] = min(self.max_tokens, 4096)  # Cap at reasonable limit
-        
-        # Add tools if provided
+            kwargs["max_tokens"] = self.max_tokens
+
+        # Only add response_format if the model supports it.
+        if self.supports_structured_output:
+            kwargs["response_format"] = pydantic_to_openai_response_format(AgentResponse)
+
         if tools:
-            tool_defs = []
-            for tool in tools:
-                tool_defs.append({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.get_schema()
-                })
-            
-            openai_tools = OpenAIAdapter.convert_tools(tool_defs)
-            
-            if openai_tools:
-                params["tools"] = openai_tools
-                params["tool_choice"] = "auto"  # Let model decide when to use tools
-        
-        return params
+            kwargs["tools"] = build_openai_tools(tools)
+            kwargs["tool_choice"] = "auto"
 
-    async def generate(
-        self, 
-        history: List[Message], 
-        tools: List[BaseTool] = None
-    ) -> AgentResponse:
+        kwargs.update(self.additional_params)
+        return kwargs
+
+    # ------------------------------------------------------------------
+    # Public: model call
+    # ------------------------------------------------------------------
+
+    async def call_model(
+        self,
+        history: List[Message],
+        tools: Optional[List[BaseTool]] = None,
+    ) -> ProviderResult:
         """
-        Generate a non-streaming response from OpenAI.
-        
-        Args:
-            history: Conversation history
-            tools: Available tools
-            
-        Returns:
-            AgentResponse with content, tool_calls, and usage
+        Stream one model turn and return the provider-contract 3-tuple:
+            (agent_response, reasoning_text, tool_calls)
+
+        tool_calls are fully parsed ToolCall objects with .id set so the
+        adapter can round-trip them through history without raw content.
+
+        On unrecoverable error returns (None, None, []).
         """
         if tools is None:
             tools = []
-        
-        # Convert history
-        messages = OpenAIAdapter.convert_history(history)
-        
-        # Build request params
-        params = self._build_request_params(messages, tools)
-        
+
+        extractor = StreamingJsonTextExtractor()
+        accumulated_content: list[str] = []
+        accumulated_reasoning: list[str] = []
+
+        # Use lists everywhere in the stream buffer — joined at the end.
+        # Maps stream index → {"id": [...], "name": [...], "arguments": [...]}
+        tool_calls_buffer: dict[int, dict[str, list[str]]] = {}
+
         try:
-            response = await self.client.chat.completions.create(**params)
-            
-            # Convert response
-            agent_response = OpenAIAdapter.convert_response(response)
-            
-            logger.debug(
-                f"Generated response: {len(agent_response.content or '')} chars, "
-                f"{len(agent_response.tool_calls)} tool calls"
+            messages = validate_and_fix_history(
+                history, system_instruction=self.system_instruction
             )
-            
-            return agent_response
-            
-        except Exception as e:
-            logger.error(f"OpenAI Provider Generate Error: {e}", exc_info=True)
-            raise RuntimeError(f"OpenAI Provider Generate Error: {str(e)}") from e
+            call_kwargs = self._build_call_kwargs(tools)
 
-    async def stream(
-        self, 
-        history: List[Message], 
-        tools: List[BaseTool] = None
-    ) -> AsyncIterator[StreamChunk]:
-        """
-        Stream responses from OpenAI with repetition detection.
-        
-        Args:
-            history: Conversation history
-            tools: Available tools
-            
-        Yields:
-            StreamChunk objects with content deltas and tool calls
-        """
-        if tools is None:
-            tools = []
-        
-        # Convert history
-        messages = OpenAIAdapter.convert_history(history)
-        
-        logger.debug(f"Sending {len(messages)} messages to OpenAI")
-        
-        # Build request params
-        params = self._build_request_params(messages, tools)
-        params["stream"] = True
-        
-        # Repetition detection
-        recent_chunks = []
-        max_repetition_check = 10
-        repetition_threshold = 0.7
-        total_chunks = 0
-        max_chunks = 500  # Emergency brake
-        
-        def is_repetitive(recent: List[str], new: str) -> bool:
-            """Check if new chunk is repetitive."""
-            if len(recent) < 5:
-                return False
-            
-            matches = sum(1 for c in recent[-max_repetition_check:] if c.strip() == new.strip())
-            similarity = matches / min(len(recent), max_repetition_check)
-            
-            return similarity > repetition_threshold
-        
-        max_retries = 3
-        retry_delay = 1.5
-        
-        for attempt in range(max_retries):
-            try:
-                logger.debug(f"Streaming with model: {self.model_id}")
-                
-                # Start streaming
-                stream = await self.client.chat.completions.create(**params)
-                
-                # Accumulate tool call data across chunks
-                tool_call_accumulator = {}
-                
-                chunk_count = 0
-                async for chunk in stream:
-                    chunk_count += 1
-                    total_chunks += 1
-                    
-                    # Emergency brake
-                    if total_chunks > max_chunks:
-                        logger.error(f"🚨 EMERGENCY STOP: {total_chunks} chunks (repetition loop?)")
-                        yield StreamChunk(content="\n\n[Model output truncated - repetition detected]")
-                        return
-                    
-                    # Convert chunk
-                    stream_chunk = OpenAIAdapter.convert_stream_chunk(chunk)
-                    
-                    if stream_chunk and stream_chunk.content:
-                        # Check for repetition
-                        if is_repetitive(recent_chunks, stream_chunk.content):
-                            logger.warning(
-                                f"🚨 REPETITION DETECTED after {total_chunks} chunks. "
-                                f"Last content: {stream_chunk.content[:50]}"
-                            )
-                            yield StreamChunk(content="\n\n[Output stopped - repetitive pattern detected]")
-                            return
-                        
-                        # Track recent chunks
-                        recent_chunks.append(stream_chunk.content)
-                        if len(recent_chunks) > max_repetition_check:
-                            recent_chunks.pop(0)
-                        
-                        yield stream_chunk
-                    
-                    elif stream_chunk and stream_chunk.tool_call:
-                        # OpenAI streams tool calls incrementally
-                        tc = stream_chunk.tool_call
-                        
-                        if tc.id:
-                            if tc.id not in tool_call_accumulator:
-                                tool_call_accumulator[tc.id] = {
-                                    "id": tc.id,
-                                    "name": tc.name,
-                                    "arguments": ""
-                                }
-                            
-                            # Accumulate arguments
-                            if tc.arguments:
-                                # Arguments come as string chunks
-                                args_str = json.dumps(tc.arguments) if isinstance(tc.arguments, dict) else str(tc.arguments)
-                                tool_call_accumulator[tc.id]["arguments"] += args_str
-                        
-                        yield stream_chunk
+            stream = await self.client.chat.completions.create(
+                messages=messages,
+                stream=True,
+                **call_kwargs,
+            )
 
-                logger.debug(f"Streamed {chunk_count} chunks successfully")
-                
-                # Yield complete tool calls if any
-                if tool_call_accumulator:
-                    for tc_data in tool_call_accumulator.values():
-                        try:
-                            args = json.loads(tc_data["arguments"])
-                            complete_tc = ToolCall(
-                                id=tc_data["id"],
-                                name=tc_data["name"],
-                                arguments=args
-                            )
-                            yield StreamChunk(tool_call=complete_tc)
-                        except json.JSONDecodeError:
-                            logger.error(f"Failed to parse accumulated tool call arguments: {tc_data}")
-                
-                # Successfully completed stream
-                break
-                
-            except Exception as e:
-                error_str = str(e)
-                
-                # Check if it's a recoverable error
-                is_recoverable = any(
-                    msg in error_str.lower()
-                    for msg in [
-                        "timeout",
-                        "connection",
-                        "network",
-                        "rate limit"
-                    ]
-                )
-                
-                if is_recoverable and attempt < max_retries - 1:
-                    logger.warning(
-                        f"⚠️ Stream interrupted ({error_str}). "
-                        f"Retrying attempt {attempt + 2}/{max_retries}..."
-                    )
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 1.5
+            async for chunk in stream:
+                if not chunk.choices:
                     continue
-                else:
-                    logger.error(f"OpenAI Provider Stream Error: {error_str}", exc_info=True)
-                    raise RuntimeError(f"OpenAI Provider Stream Error: {error_str}") from e
+                delta = chunk.choices[0].delta
+
+                # Reasoning tokens (o-series).
+                reasoning_fragment = getattr(delta, "reasoning_content", None)
+                if reasoning_fragment:
+                    accumulated_reasoning.append(reasoning_fragment)
+
+                # Text content.
+                if delta.content:
+                    accumulated_content.append(delta.content)
+                    for fragment in extractor.feed(delta.content):
+                        if self.on_text_chunk:
+                            self.on_text_chunk(fragment)
+
+                # Tool call stream deltas — list-based accumulation.
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx: int = tc_delta.index if tc_delta.index is not None else 0
+                        if idx not in tool_calls_buffer:
+                            tool_calls_buffer[idx] = {
+                                "id": [],
+                                "name": [],
+                                "arguments": [],
+                            }
+                        slot = tool_calls_buffer[idx]
+                        if tc_delta.id:
+                            slot["id"].append(tc_delta.id)
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                slot["name"].append(tc_delta.function.name)
+                            if tc_delta.function.arguments:
+                                slot["arguments"].append(tc_delta.function.arguments)
+
+        except Exception as exc:
+            logger.error("OpenAI stream error: %s", exc, exc_info=True)
+            return None, None, []
+
+        # ------------------------------------------------------------------
+        # Assemble tool calls from buffers.
+        # Malformed JSON arguments produce a synthetic error ToolCall that
+        # the orchestrator returns to the model as a ToolResult so it can
+        # self-correct rather than silently getting empty arguments.
+        # ------------------------------------------------------------------
+        parsed_tool_calls: List[ToolCall] = []
+
+        for idx in sorted(tool_calls_buffer):
+            slot = tool_calls_buffer[idx]
+            fn_name = "".join(slot["name"]).strip()
+            fn_args_raw = "".join(slot["arguments"])
+            call_id = "".join(slot["id"]) or f"call_synthetic_{idx}"
+
+            if not fn_name:
+                logger.warning(
+                    "Skipping tool call at index %d: name is empty. Buffer: %s",
+                    idx, slot,
+                )
+                continue
+
+            try:
+                parsed_args = json.loads(fn_args_raw) if fn_args_raw.strip() else {}
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "Malformed JSON arguments for tool '%s' (id=%s): %s",
+                    fn_name, call_id, exc,
+                )
+                # Return a sentinel ToolCall that the orchestrator will convert
+                # to an error ToolResult and feed back to the model.
+                parsed_tool_calls.append(
+                    ToolCall(
+                        name=fn_name,
+                        arguments={
+                            "__parse_error__": (
+                                f"Invalid JSON arguments: {exc}. "
+                                "Fix the syntax and try again."
+                            )
+                        },
+                        id=call_id,
+                    )
+                )
+                continue
+
+            parsed_tool_calls.append(
+                ToolCall(name=fn_name, arguments=parsed_args, id=call_id)
+            )
+
+        # ------------------------------------------------------------------
+        # Parse structured response (only when model did not call tools).
+        # AgentResponseParseError propagates so the orchestrator can feed
+        # the validation failure back to the model.
+        # ------------------------------------------------------------------
+        reasoning_text: Optional[str] = (
+            "".join(accumulated_reasoning) or None
+        )
+        agent_response: Optional[AgentResponse] = None
+
+        if not parsed_tool_calls:
+            try:
+                agent_response = extractor.finalize()
+            except AgentResponseParseError:
+                raise  # orchestrator handles this
+            if agent_response is None and accumulated_content:
+                logger.warning(
+                    "Non-empty content could not be parsed as AgentResponse "
+                    "(first 200 chars): %.200s",
+                    "".join(accumulated_content),
+                )
+
+        logger.debug(
+            "call_model — tool_calls=%d agent_response=%s reasoning=%s",
+            len(parsed_tool_calls),
+            agent_response is not None,
+            reasoning_text is not None,
+        )
+        return agent_response, reasoning_text, parsed_tool_calls

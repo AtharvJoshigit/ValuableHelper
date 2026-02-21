@@ -173,7 +173,7 @@ class ApplicationManager:
                 'temperature': 1.0,
                 "model_id": "gemini-3-flash-preview",
                 "provider": "google",
-                "max_steps": 25,
+                "max_steps": 5,
                 "additional_params": {
                     "include_thoughts": False,
                 },

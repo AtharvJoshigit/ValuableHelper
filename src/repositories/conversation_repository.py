@@ -51,20 +51,19 @@ class ConversationRepository:
         3. Otherwise, create new conversation
         """
         # Calculate cutoff time for session resumption
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=session_timeout_hours)
+        # cutoff_time = datetime.now(timezone.utc) - timedelta(hours=session_timeout_hours)
         
         query = """
             SELECT id, updated_at FROM conversations
             WHERE agent_id = ? 
               AND is_active = 1
-              AND updated_at > ?
             ORDER BY updated_at DESC
             LIMIT 1
         """
         
         row = await self.db.fetch_one(
             query, 
-            (agent_id, cutoff_time.isoformat())
+            (agent_id,)
         )
         
         if row:

@@ -1,568 +1,313 @@
-# engine/providers/openai/adapter.py
+"""
+OpenAI Adapter
 
-from typing import List, Dict, Any, Optional
+Converts between the provider-agnostic Pydantic layer and the OpenAI API wire
+format.  All reconstruction is done from pure Pydantic models — there is no
+dependency on cached raw provider objects.
+
+Tool call ids (ToolCall.id) and any other round-trip fields are carried on
+the Pydantic models themselves, so history replay is accurate without needing
+to cache ChatCompletionMessage instances.
+
+Turn ordering rules enforced here:
+  system (optional, first only)
+  user
+  assistant                     ← plain response
+  assistant (tool_calls=[…])   ← model requesting tools
+  tool (tool_call_id=…) ×N    ← one per tool call
+  user / assistant / …          ← conversation continues
+"""
+
+from __future__ import annotations
+
 import json
 import logging
 import re
-from copy import deepcopy
+from typing import Any, Dict, List, Optional, Type
 
-from engine.core.types import (
-    Message, 
-    Role, 
-    ToolCall, 
-    AgentResponse, 
-    UsageMetadata,
-    StreamChunk
+from openai.types.chat import (
+    ChatCompletionMessageParam,
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionToolMessageParam,
+    ChatCompletionUserMessageParam,
+    ChatCompletionSystemMessageParam,
 )
+
+from engine.core.turn_manager import validate_message_ordering
+from engine.registry.base_tool import BaseTool
+from engine.schemas.message import Message, MessageKind, Role
+from engine.schemas.response import AgentResponse
+from engine.schemas.tool_result import ToolCall
 
 logger = logging.getLogger(__name__)
 
-class OpenAIAdapter:
+# Matches ```json ... ``` or ``` ... ``` with optional surrounding whitespace.
+_MARKDOWN_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+
+
+# ---------------------------------------------------------------------------
+# Streaming JSON extractor
+# ---------------------------------------------------------------------------
+
+class StreamingJsonTextExtractor:
     """
-    Production-ready OpenAI adapter with robust error handling.
-    
-    Handles conversion between internal Message format and OpenAI's format.
+    Accumulates streamed text fragments and parses the final AgentResponse
+    once streaming is complete.
+
+    Handles markdown code fences robustly via regex rather than brittle
+    line-splitting (trailing whitespace/newlines after the fence would break
+    a line-based approach).
     """
 
-    @staticmethod
-    def _sanitize_string(s: str) -> str:
-        """Sanitize string to prevent JSON encoding issues."""
-        if not isinstance(s, str):
-            return str(s)
-        
-        # Remove null bytes and control characters
-        s = s.replace('\x00', '')
-        s = re.sub(r'[\x01-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', s)
-        
-        # Ensure proper UTF-8 encoding
+    def __init__(self) -> None:
+        self._buffer: list[str] = []
+
+    def feed(self, fragment: str) -> list[str]:
+        self._buffer.append(fragment)
+        return [fragment]
+
+    def finalize(self) -> Optional[AgentResponse]:
+        raw = "".join(self._buffer).strip()
+        if not raw:
+            return None
+
+        # Strip markdown fences if present.
+        match = _MARKDOWN_JSON_RE.search(raw)
+        if match:
+            raw = match.group(1)
+
         try:
-            s = s.encode('utf-8', errors='ignore').decode('utf-8')
-        except Exception:
-            pass
-        
-        return s
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.warning("StreamingJsonTextExtractor: invalid JSON — %s", exc)
+            return None
 
-    @staticmethod
-    def _validate_json_serializable(obj: Any, max_depth: int = 10) -> Any:
-        """Validate and fix object to be JSON-serializable."""
-        if max_depth <= 0:
-            return str(obj)
-        
-        if obj is None or isinstance(obj, (bool, int, float)):
-            return obj
-        
-        if isinstance(obj, str):
-            return OpenAIAdapter._sanitize_string(obj)
-        
-        if isinstance(obj, dict):
-            sanitized = {}
-            for k, v in obj.items():
-                key = OpenAIAdapter._sanitize_string(str(k))
-                sanitized[key] = OpenAIAdapter._validate_json_serializable(v, max_depth - 1)
-            return sanitized
-        
-        if isinstance(obj, (list, tuple)):
-            return [
-                OpenAIAdapter._validate_json_serializable(item, max_depth - 1) 
-                for item in obj
-            ]
-        
-        return OpenAIAdapter._sanitize_string(str(obj))
+        try:
+            return AgentResponse.model_validate(data)
+        except Exception as exc:
+            # Surface the validation error so the orchestrator can feed it
+            # back to the model rather than silently retrying.
+            logger.warning(
+                "StreamingJsonTextExtractor: AgentResponse validation failed — %s", exc
+            )
+            # Re-raise as a domain exception the orchestrator can catch.
+            raise AgentResponseParseError(str(exc), raw_json=raw) from exc
 
-    @staticmethod
-    def convert_tools(tools_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Convert tool definitions to OpenAI function format.
-        
-        OpenAI expects:
-        {
+
+class AgentResponseParseError(Exception):
+    """Raised when the model's JSON is syntactically valid but fails Pydantic validation."""
+
+    def __init__(self, detail: str, raw_json: str = "") -> None:
+        super().__init__(detail)
+        self.raw_json = raw_json
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schema → OpenAI response_format (Structured Outputs)
+# ---------------------------------------------------------------------------
+
+def pydantic_to_openai_response_format(model: Type[Any]) -> Dict[str, Any]:
+    """
+    Convert a Pydantic model class to the OpenAI ``response_format`` dict.
+
+    Uses ``strict=True`` which requires every property in ``required`` and
+    no ``additionalProperties``.  ``_make_strict`` patches the schema to
+    comply while skipping bare ``{"type": "null"}`` stubs emitted by Pydantic
+    for Optional fields (patching those produces invalid schemas that fail
+    OpenAI's validation).
+    """
+    schema = model.model_json_schema()
+    _make_strict(schema)
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": model.__name__,
+            "schema": schema,
+            "strict": True,
+        },
+    }
+
+
+def _make_strict(schema: Dict[str, Any]) -> None:
+    """
+    Recursively patch a JSON schema for OpenAI strict mode.
+
+    Only applies additionalProperties/required to actual object nodes.
+    Bare ``{"type": "null"}`` entries in anyOf are skipped.
+    """
+    if schema.get("type") == "object" or "properties" in schema:
+        props = schema.get("properties", {})
+        schema["additionalProperties"] = False
+        schema["required"] = list(props.keys())
+        for prop_schema in props.values():
+            _make_strict(prop_schema)
+
+    if "items" in schema:
+        _make_strict(schema["items"])
+
+    for combiner in ("anyOf", "oneOf", "allOf"):
+        for sub in schema.get(combiner, []):
+            if sub.get("type") == "null" and len(sub) == 1:
+                continue
+            _make_strict(sub)
+
+    for def_schema in schema.get("$defs", {}).values():
+        _make_strict(def_schema)
+
+
+# ---------------------------------------------------------------------------
+# Tool definition → OpenAI tools[] format
+# ---------------------------------------------------------------------------
+
+def build_openai_tools(tools: List[BaseTool]) -> List[Dict[str, Any]]:
+    result = []
+    for tool in tools:
+        schema = tool.get_schema()
+        properties = schema.get("properties", {})
+        required = schema.get("required", list(properties.keys()))
+        result.append({
             "type": "function",
             "function": {
-                "name": "...",
-                "description": "...",
-                "parameters": {...}
-            }
-        }
-        """
-        openai_tools = []
-        
-        for tool in tools_data:
-            try:
-                parameters = deepcopy(tool.get("parameters", {}))
-                
-                # Remove incompatible fields
-                fields_to_remove = [
-                    "title", "$schema", "additionalProperties",
-                    "$defs", "definitions", "allOf", "anyOf", "oneOf"
-                ]
-                
-                for field in fields_to_remove:
-                    parameters.pop(field, None)
-                
-                OpenAIAdapter._clean_schema(parameters)
-                
-                # Validate
-                name = OpenAIAdapter._sanitize_string(tool["name"])
-                description = OpenAIAdapter._sanitize_string(tool["description"])
-                parameters = OpenAIAdapter._validate_json_serializable(parameters)
-                
-                tool_def = {
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": description,
-                        "parameters": parameters
-                    }
-                }
-                
-                # Test serialization
-                try:
-                    json.dumps(tool_def)
-                    openai_tools.append(tool_def)
-                except Exception as e:
-                    logger.error(f"Tool '{name}' not JSON-serializable: {e}")
-                    continue
-                
-            except Exception as e:
-                logger.error(f"Failed to convert tool '{tool.get('name', 'unknown')}': {e}")
-                continue
-        
-        return openai_tools
-    
-    @staticmethod
-    def _clean_schema(schema: Dict[str, Any]) -> None:
-        """Recursively clean schema."""
-        if not isinstance(schema, dict):
-            return
-        
-        for field in ["title", "additionalProperties", "$defs", "definitions"]:
-            schema.pop(field, None)
-        
-        if "properties" in schema:
-            for prop_schema in schema["properties"].values():
-                if isinstance(prop_schema, dict):
-                    OpenAIAdapter._clean_schema(prop_schema)
-        
-        if "items" in schema and isinstance(schema["items"], dict):
-            OpenAIAdapter._clean_schema(schema["items"])
+                "name": tool.name,
+                "description": tool.description or f"Executes {tool.name}",
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                    "additionalProperties": False,
+                },
+            },
+        })
+    return result
 
-    @staticmethod
-    def extract_system_message(history: List[Message]) -> Optional[str]:
-        """Extract and combine all system messages."""
-        system_msgs = [m.content for m in history if m.role == Role.SYSTEM and m.content]
-        return "\n\n".join(system_msgs) if system_msgs else None
 
-    @staticmethod
-    def _consolidate_consecutive_roles(
-        openai_history: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Merge consecutive messages with the same role.
-        OpenAI requires alternating user/assistant messages.
-        """
-        if not openai_history:
-            return []
-        
-        consolidated = [openai_history[0]]
-        
-        for msg in openai_history[1:]:
-            last_msg = consolidated[-1]
-            
-            # Same role? Merge the content
-            if msg["role"] == last_msg["role"]:
-                logger.warning(
-                    f"Merging consecutive {msg['role']} messages"
-                )
-                
-                # Merge content (both could be strings or lists)
-                last_content = last_msg.get("content", "")
-                new_content = msg.get("content", "")
-                
-                if isinstance(last_content, str) and isinstance(new_content, str):
-                    last_msg["content"] = f"{last_content}\n\n{new_content}"
-                else:
-                    # Handle tool calls
-                    if "tool_calls" in msg:
-                        if "tool_calls" not in last_msg:
-                            last_msg["tool_calls"] = []
-                        last_msg["tool_calls"].extend(msg["tool_calls"])
-            else:
-                consolidated.append(msg)
-        
-        return consolidated
+# ---------------------------------------------------------------------------
+# Message conversion: Pydantic Message → OpenAI ChatCompletionMessageParam
+# ---------------------------------------------------------------------------
 
-    @staticmethod
-    def _validate_openai_pattern(
-        openai_history: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Validate OpenAI message pattern.
-        
-        Rules:
-        - Messages must alternate between user and assistant
-        - Tool calls must be followed by tool results
-        - No dangling tool calls at the end
-        """
-        if not openai_history:
-            return []
-        
-        validated = []
-        
-        for i, msg in enumerate(openai_history):
-            role = msg["role"]
-            
-            # Check for dangling tool calls at the end
-            is_last = (i == len(openai_history) - 1)
-            if is_last and "tool_calls" in msg and msg["tool_calls"]:
-                logger.warning("Removing dangling tool calls from history end")
-                msg_copy = msg.copy()
-                msg_copy.pop("tool_calls", None)
-                if msg_copy.get("content"):
-                    validated.append(msg_copy)
-                else:
-                    logger.warning("Skipping empty assistant message at end")
-                    continue
-            else:
-                validated.append(msg)
-        
-        # Final check: ensure alternating pattern
-        if len(validated) >= 2:
-            for i in range(len(validated) - 1):
-                current_role = validated[i]["role"]
-                next_role = validated[i + 1]["role"]
-                
-                # Allow tool role to follow assistant
-                if current_role == next_role and current_role != "tool":
-                    logger.error(
-                        f"PATTERN VIOLATION at index {i}: "
-                        f"{current_role} → {next_role} (should alternate)"
-                    )
-        
-        return validated
+def message_to_openai_param(msg: Message) -> List[ChatCompletionMessageParam]:
+    """
+    Convert a single Pydantic Message to one *or more* OpenAI message dicts.
 
-    @staticmethod
-    def _safe_debug_print(openai_history: List[Dict[str, Any]]):
-        """Debug print that's safe for logging."""
-        safe_history = []
-        
-        for msg in openai_history:
-            safe_msg = {"role": msg.get("role")}
-            
-            content = msg.get("content")
-            if content:
-                if isinstance(content, str):
-                    safe_msg["content"] = content[:100] + "..." if len(content) > 100 else content
-                else:
-                    safe_msg["content"] = str(content)[:100]
-            
-            if "tool_calls" in msg:
-                safe_msg["tool_calls"] = [
-                    {
-                        "id": tc.get("id", "unknown"),
-                        "function": {
-                            "name": tc.get("function", {}).get("name", "unknown")
+    Reconstruction is done entirely from the Pydantic model fields:
+      - ToolCall.id carries the tool_call_id for exact round-trip matching.
+      - No raw provider objects are read here.
+
+    TOOL_RESULT messages expand into one dict per result (one tool_call_id each).
+    """
+
+    # ── Model turns ────────────────────────────────────────────────────────
+    if msg.role == Role.MODEL:
+
+        if msg.kind == MessageKind.TOOL_CALL:
+            if not msg.tool_calls:
+                logger.warning("TOOL_CALL message has no tool_calls — skipping.")
+                return []
+            return [
+                ChatCompletionAssistantMessageParam(
+                    role="assistant",
+                    # content must be None when tool_calls are present (OpenAI spec).
+                    content=None,
+                    tool_calls=[
+                        {
+                            "id": tc.id or f"call_{i}_{tc.name}",
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments),
+                            },
                         }
-                    }
-                    for tc in msg["tool_calls"][:3]  # Show first 3
-                ]
-            
-            if "tool_call_id" in msg:
-                safe_msg["tool_call_id"] = msg["tool_call_id"]
-            
-            safe_history.append(safe_msg)
-        
-        logger.info(f"History being sent ({len(safe_history)} messages):")
-        logger.info(json.dumps(safe_history, indent=2))
+                        for i, tc in enumerate(msg.tool_calls)
+                    ],
+                )
+            ]
 
-    @staticmethod
-    def convert_history(
-        history: List[Message]
-    ) -> List[Dict[str, Any]]:
-        """
-        Convert Message history to OpenAI format.
-        
-        OpenAI format:
-        - system: {"role": "system", "content": "..."}
-        - user: {"role": "user", "content": "..."}
-        - assistant: {"role": "assistant", "content": "...", "tool_calls": [...]}
-        - tool: {"role": "tool", "tool_call_id": "...", "content": "..."}
-        """
-        logger.debug(f"Converting history: {len(history)} messages")
-        
-        openai_history = []
-        
-        for idx, msg in enumerate(history):
-            try:
-                # System messages
-                if msg.role == Role.SYSTEM:
-                    if msg.content and msg.content.strip():
-                        openai_history.append({
-                            "role": "system",
-                            "content": OpenAIAdapter._sanitize_string(msg.content)
-                        })
-                    continue
-                
-                # User messages
-                if msg.role == Role.USER:
-                    if msg.content and msg.content.strip():
-                        openai_history.append({
-                            "role": "user",
-                            "content": OpenAIAdapter._sanitize_string(msg.content)
-                        })
-                    continue
-                
-                # Assistant messages (with optional tool calls)
-                if msg.role == Role.ASSISTANT:
-                    assistant_msg = {"role": "assistant"}
-                    
-                    # Add content if present
-                    if msg.content and msg.content.strip():
-                        assistant_msg["content"] = OpenAIAdapter._sanitize_string(msg.content)
-                    
-                    # Add tool calls if present
-                    if msg.tool_calls:
-                        tool_calls = []
-                        for tc in msg.tool_calls:
-                            try:
-                                args = OpenAIAdapter._prepare_arguments(tc.arguments)
-                                args = OpenAIAdapter._validate_json_serializable(args)
-                                
-                                # Validate JSON serialization
-                                args_str = json.dumps(args)
-                                
-                                tool_calls.append({
-                                    "id": tc.id or f"call_{idx}",
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.name,
-                                        "arguments": args_str
-                                    }
-                                })
-                            except Exception as e:
-                                logger.error(f"Failed to convert tool call '{tc.name}': {e}")
-                                continue
-                        
-                        if tool_calls:
-                            assistant_msg["tool_calls"] = tool_calls
-                    
-                    # Only add if has content or tool calls
-                    if "content" in assistant_msg or "tool_calls" in assistant_msg:
-                        openai_history.append(assistant_msg)
-                    else:
-                        logger.warning(f"Skipping empty assistant message at index {idx}")
-                    continue
-                
-                # Tool result messages
-                if msg.role == Role.TOOL:
-                    if msg.tool_results:
-                        for tr in msg.tool_results:
-                            try:
-                                result_data = OpenAIAdapter._prepare_tool_result(tr.result)
-                                result_data = OpenAIAdapter._validate_json_serializable(result_data)
-                                
-                                # OpenAI expects string content
-                                result_str = json.dumps(result_data)
-                                
-                                openai_history.append({
-                                    "role": "tool",
-                                    "tool_call_id": tr.tool_call_id or tr.name,
-                                    "content": result_str
-                                })
-                            except Exception as e:
-                                logger.error(f"Failed to convert tool result '{tr.name}': {e}")
-                                openai_history.append({
-                                    "role": "tool",
-                                    "tool_call_id": tr.tool_call_id or tr.name,
-                                    "content": json.dumps({"error": f"Conversion failed: {str(e)}"})
-                                })
-                    continue
-                
-            except Exception as e:
-                logger.error(f"Error processing message at index {idx}: {e}", exc_info=True)
-                continue
-        
-        # Consolidate consecutive messages
-        openai_history = OpenAIAdapter._consolidate_consecutive_roles(openai_history)
-        
-        # Validate pattern
-        openai_history = OpenAIAdapter._validate_openai_pattern(openai_history)
-        
-        # Debug print
-        OpenAIAdapter._safe_debug_print(openai_history)
-        
-        return openai_history
-
-    @staticmethod
-    def _prepare_arguments(arguments: Any) -> Dict[str, Any]:
-        """Prepare and validate tool arguments."""
-        if arguments is None:
-            return {}
-        
-        if isinstance(arguments, dict):
-            return arguments
-        
-        if isinstance(arguments, str):
-            try:
-                parsed = json.loads(arguments)
-                return parsed if isinstance(parsed, dict) else {"value": parsed}
-            except json.JSONDecodeError:
-                logger.warning(f"Could not parse arguments as JSON: {arguments[:100]}")
-                return {"raw_input": arguments}
-        
-        return {"value": str(arguments)}
-
-    @staticmethod
-    def _prepare_tool_result(result: Any) -> Dict[str, Any]:
-        """Prepare and validate tool result."""
-        if result is None:
-            return {"result": None}
-        
-        if isinstance(result, dict):
-            try:
-                json.dumps(result)
-                return result
-            except (TypeError, ValueError) as e:
-                logger.warning(f"Dict result not serializable: {e}")
-                return {"result": str(result)}
-        
-        if isinstance(result, str):
-            try:
-                parsed = json.loads(result)
-                return {"result": parsed}
-            except json.JSONDecodeError:
-                return {"result": result}
-        
-        if isinstance(result, (int, float, bool)):
-            return {"result": result}
-        
-        if isinstance(result, list):
-            try:
-                json.dumps(result)
-                return {"result": result}
-            except (TypeError, ValueError):
-                return {"result": str(result)}
-        
-        return {"result": str(result)}
-
-    @staticmethod
-    def convert_response(response: Any) -> AgentResponse:
-        """
-        Convert OpenAI response to AgentResponse.
-        
-        OpenAI response structure:
-        {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "...",
-                    "tool_calls": [...]
-                }
-            }],
-            "usage": {...}
-        }
-        """
-        content = None
-        tool_calls = []
-        
-        if not response.choices:
-            return AgentResponse(content="Error: No choices returned.")
-        
-        choice = response.choices[0]
-        message = choice.message
-        
-        # Extract content
-        if hasattr(message, 'content') and message.content:
-            content = message.content
-        
-        # Extract tool calls
-        if hasattr(message, 'tool_calls') and message.tool_calls:
-            for tc in message.tool_calls:
-                try:
-                    # Parse arguments
-                    args = {}
-                    if hasattr(tc.function, 'arguments'):
-                        try:
-                            args = json.loads(tc.function.arguments)
-                        except json.JSONDecodeError:
-                            logger.error(f"Failed to parse tool arguments: {tc.function.arguments}")
-                            args = {"raw": tc.function.arguments}
-                    
-                    tool_calls.append(ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
-                        arguments=args
-                    ))
-                except Exception as e:
-                    logger.error(f"Error processing tool call: {e}")
-        
-        # Extract usage
-        usage = None
-        if hasattr(response, 'usage') and response.usage:
-            usage = UsageMetadata(
-                input_tokens=getattr(response.usage, 'prompt_tokens', 0) or 0,
-                output_tokens=getattr(response.usage, 'completion_tokens', 0) or 0,
-                total_tokens=getattr(response.usage, 'total_tokens', 0) or 0
+        # Plain text / structured model message.
+        return [
+            ChatCompletionAssistantMessageParam(
+                role="assistant",
+                content=msg.text or "",
             )
-        
-        return AgentResponse(
-            content=content,
-            tool_calls=tool_calls,
-            usage=usage
+        ]
+
+    # ── Tool results ────────────────────────────────────────────────────────
+    # OpenAI tool message spec: role, tool_call_id, content only.
+    # The `name` field is NOT in the spec and causes API errors if included.
+    if msg.kind == MessageKind.TOOL_RESULT:
+        params: List[ChatCompletionMessageParam] = []
+        for tr in msg.tool_results:
+            params.append(
+                ChatCompletionToolMessageParam(
+                    role="tool",
+                    tool_call_id=tr.id or f"call_{tr.name}",
+                    content=json.dumps({"result": tr.result, "is_error": tr.is_error}),
+                )
+            )
+        return params
+
+    # ── User text ──────────────────────────────────────────────────────────
+    return [
+        ChatCompletionUserMessageParam(
+            role="user",
+            content=msg.text or "",
         )
-    
-    @staticmethod
-    def convert_stream_chunk(chunk: Any) -> Optional[StreamChunk]:
-        """
-        Convert OpenAI stream chunk to StreamChunk.
-        
-        OpenAI stream format:
-        {
-            "choices": [{
-                "delta": {
-                    "content": "...",
-                    "tool_calls": [...]
-                }
-            }]
-        }
-        """
-        if not chunk.choices:
-            return None
-        
-        choice = chunk.choices[0]
-        delta = choice.delta
-        
-        stream_chunk = StreamChunk()
-        
-        # Extract content delta
-        if hasattr(delta, 'content') and delta.content:
-            stream_chunk.content = delta.content
-        
-        # Extract tool call deltas
-        if hasattr(delta, 'tool_calls') and delta.tool_calls:
-            for tc in delta.tool_calls:
-                try:
-                    # OpenAI streams tool calls incrementally
-                    if hasattr(tc, 'function') and tc.function:
-                        # Parse arguments if present
-                        args = {}
-                        if hasattr(tc.function, 'arguments') and tc.function.arguments:
-                            try:
-                                args = json.loads(tc.function.arguments)
-                            except json.JSONDecodeError:
-                                # Partial JSON, skip for now
-                                continue
-                        
-                        tool_call = ToolCall(
-                            id=tc.id if hasattr(tc, 'id') else None,
-                            name=tc.function.name if hasattr(tc.function, 'name') else None,
-                            arguments=args
-                        )
-                        
-                        stream_chunk.tool_call = tool_call
-                except Exception as e:
-                    logger.error(f"Error processing stream tool call: {e}")
-        
-        if stream_chunk.content or stream_chunk.tool_call:
-            return stream_chunk
-        
-        return None
+    ]
+
+
+# ---------------------------------------------------------------------------
+# History validation
+# ---------------------------------------------------------------------------
+
+def validate_and_fix_history(
+    messages: List[Message],
+    *,
+    system_instruction: Optional[str] = None,
+) -> List[ChatCompletionMessageParam]:
+    """
+    Convert Pydantic Messages to OpenAI params, enforcing ordering rules.
+
+    1. Inject system message first if provided.
+    2. Provider-independent ordering validation.
+    3. Convert each Message via message_to_openai_param().
+    4. Validate tool_call / tool message pairing.
+    """
+    params: List[ChatCompletionMessageParam] = []
+
+    if system_instruction:
+        params.append(
+            ChatCompletionSystemMessageParam(role="system", content=system_instruction)
+        )
+
+    if not messages:
+        return params
+
+    validated = validate_message_ordering(messages)
+    for msg in validated:
+        params.extend(message_to_openai_param(msg))
+
+    _validate_tool_call_pairing(params)
+    return params
+
+
+def _validate_tool_call_pairing(params: List[ChatCompletionMessageParam]) -> None:
+    for i, param in enumerate(params):
+        if param.get("role") != "assistant":
+            continue
+        tool_calls = param.get("tool_calls")
+        if not tool_calls:
+            continue
+
+        expected_ids = {tc["id"] for tc in tool_calls}
+        found_ids: set[str] = set()
+        j = i + 1
+        while j < len(params) and params[j].get("role") == "tool":
+            found_ids.add(params[j]["tool_call_id"])
+            j += 1
+
+        missing = expected_ids - found_ids
+        if missing:
+            logger.error(
+                "History: tool_calls at index %d missing responses for ids: %s "
+                "— API call will likely be rejected.",
+                i, missing,
+            )

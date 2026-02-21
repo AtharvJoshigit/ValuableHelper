@@ -1,18 +1,44 @@
 # engine/core/memory_manager.py
-import logging
-import asyncio
-from typing import List, Optional, Dict, Any
-from datetime import datetime
+"""
+Turn-based, state-aware memory engine.
 
-from engine.core.summerizer import MemorySummarizer
-from engine.core.types import Message, Role
+System-prompt policy
+--------------------
+The system prompt is NEVER stored in the database.
+It is held exclusively in self._original_system_prompt (in-memory).
+get_history() fuses it with the short summary at call-time.
+This keeps the messages table free of system rows and eliminates the
+summary-accumulation bug entirely.
+
+Turn lifecycle (called from Agent)
+-----------------------------------
+  begin_turn()   – open an OPEN turn row; returns turn_id
+  commit_turn()  – persist turn messages from TurnResult.history_snapshot,
+                   mark the turn COMPLETED, fire background summarization
+  cancel_current_turn() – explicit cancel (e.g. user disconnected)
+
+Context retrieval
+-----------------
+  get_history() → [fused system msg] + [msgs from last N COMPLETED turns]
+"""
+
+import asyncio
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
 from database.base import BaseDatabase
+from engine.core.summerizer import MemorySummarizer
+from engine.schemas.message import Message, MessageKind, Role
 from rag.stores.memory import MemoryVectorStore
-from repositories.message_repository import MessageRepository
 from repositories.conversation_repository import ConversationRepository
+from repositories.message_repository import MessageRepository
 from repositories.summary_repository import HybridSummaryRepository
+from repositories.turn_repository import TurnRepository
 
 logger = logging.getLogger(__name__)
+
+_SUMMARY_MARKER = "\n\n### PREVIOUS CONVERSATION CONTEXT\n"
+
 
 class MemoryManager:
     def __init__(
@@ -20,344 +46,466 @@ class MemoryManager:
         db: BaseDatabase,
         agent_id: str,
         agent_name: Optional[str] = None,
-        recent_k: int = 15,
-        summarization_threshold: int = 20,
+        system_prompt: Optional[str] = None,   # passed in; never stored to DB
+        recent_k_turns: int = 10,
+        summarization_threshold: int = 15,
+        token_threshold_pct: float = 0.70,
+        model_context_tokens: int = 100_000,
         enable_summarization: bool = True,
         auto_summarize: bool = True,
-        session_timeout_hours: int  = 24
     ):
         self.db = db
         self.agent_id = agent_id
         self.agent_name = agent_name
-        self.recent_k = recent_k
+        self.recent_k_turns = recent_k_turns
         self.summarization_threshold = summarization_threshold
+        self.token_threshold = int(model_context_tokens * token_threshold_pct)
         self.enable_summarization = enable_summarization
         self.auto_summarize = auto_summarize
-        
-        self.message_repo = MessageRepository(db)
-        self.summary_repo = HybridSummaryRepository(
-            db=db,
-            vector_store=MemoryVectorStore() if enable_summarization else None
-        )
+
+        # System prompt lives HERE ONLY — never in the DB.
+        self._original_system_prompt: Optional[str] = system_prompt
+
+        self.message_repo      = MessageRepository(db)
+        self.turn_repo         = TurnRepository(db)
         self.conversation_repo = ConversationRepository(db)
-        
+        self.summary_repo      = HybridSummaryRepository(
+            db=db,
+            vector_store=MemoryVectorStore() if enable_summarization else None,
+        )
+
         self.conversation_id: Optional[str] = None
         self._sequence_counter: int = 0
-        self._original_system_prompt: Optional[str] = None
+        self._current_turn_id: Optional[str] = None
         self._summarization_lock = asyncio.Lock()
-        
+
         self._summarizer: Optional[MemorySummarizer] = None
         if enable_summarization:
             self._summarizer = MemorySummarizer(agent_id=agent_id)
 
-    async def initialize(self):
-        """Initialize conversation session."""
+    # ------------------------------------------------------------------ #
+    # Initialization                                                       #
+    # ------------------------------------------------------------------ #
+
+    async def initialize(self) -> None:
+        """
+        Resume or create a conversation session.
+
+        On resume: cancel any OPEN turns left by a prior crash so
+        history is always built from fully-completed turns only.
+
+        Note: We do NOT read any system message from the DB.
+              _original_system_prompt is set at construction time.
+        """
         self.conversation_id = await self.conversation_repo.get_or_create_active_conversation(
             agent_id=self.agent_id,
-            agent_name=self.agent_name
+            agent_name=self.agent_name,
         )
-        
-        self._sequence_counter = await self.message_repo.get_message_count(self.conversation_id)
-        
-        # Cache original system prompt
-        system_msg = await self.message_repo.get_system_message(self.conversation_id)
-        if system_msg:
-            self._original_system_prompt = system_msg.content
 
-    async def add_message(self, message: Message):
-        """Add message with strict consecutive deduplication."""
+        cancelled = await self.turn_repo.cancel_open_turns(self.conversation_id)
+        if cancelled:
+            logger.warning(
+                "Session resume: cancelled %d stale OPEN turn(s) in conversation %s",
+                cancelled, self.conversation_id[:8],
+            )
+
+        self._sequence_counter = await self.message_repo.get_message_count(
+            self.conversation_id
+        )
+        self._current_turn_id = None
+
+    def set_system_prompt(self, prompt: str) -> None:
+        """
+        Update the in-memory system prompt at runtime (e.g. after tool-augmented
+        prompt injection).  Never touches the DB.
+        """
+        self._original_system_prompt = self._strip_summary_injection(prompt)
+
+    # ------------------------------------------------------------------ #
+    # Turn lifecycle — called from Agent                                   #
+    # ------------------------------------------------------------------ #
+
+    async def begin_turn(self) -> str:
+        """
+        Open a new OPEN turn immediately before the orchestrator runs.
+
+        If a prior turn is somehow still OPEN (e.g. agent reused without
+        commit after an error), cancel it first.
+
+        Returns the new turn_id so the caller can pass it to commit_turn.
+        """
         if not self.conversation_id:
             await self.initialize()
 
-        # 1. Handle System Prompt Updates
-        if message.role == Role.SYSTEM:
-            # Strip any injected summary block before comparison or storage.
-            # get_history() fuses the original prompt with a summary block and returns
-            # it as the system message.  If the agent framework naively feeds that
-            # fused message back through add_message(), we must not let the injected
-            # block pollute _original_system_prompt — otherwise each cycle appends
-            # another summary on top of the previous one (the accumulation bug).
-            clean_content = self._strip_summary_injection(message.content)
+        if self._current_turn_id:
+            logger.warning(
+                "begin_turn called while turn %s was still OPEN — cancelling it.",
+                self._current_turn_id[:8],
+            )
+            await self.turn_repo.cancel_turn(self._current_turn_id)
+            self._current_turn_id = None
 
-            # Identical clean content → nothing has changed, skip entirely.
-            if self._original_system_prompt and clean_content == self._original_system_prompt:
-                return
-
-            # Genuinely new system prompt — update cache with the CLEAN version only.
-            self._original_system_prompt = clean_content
-
-            # Persist the clean version so session resume via initialize() also loads
-            # a prompt that has no baked-in summary.
-            message = Message(role=Role.SYSTEM, content=clean_content)
-
-        # 2. Strict Consecutive Deduplication
-        # Only compare against the very last message to prevent "stuttering".
-        # Tool results are excluded from dedup — identical polling results are valid.
-        last_msg = await self.message_repo.get_last_message(self.conversation_id)
-        if last_msg:
-            is_dup_content = (last_msg.content == message.content) and (message.content is not None)
-            is_dup_role    = last_msg.role == message.role
-            if is_dup_role and is_dup_content and message.role != Role.TOOL:
-                logger.warning(f"Skipping consecutive duplicate message: {message.content[:50]}...")
-                return
-
-        self._sequence_counter += 1
-        
-        await self.message_repo.add_message(
+        # Placeholder sequence; real user-message seq is filled in commit_turn.
+        turn_id = await self.turn_repo.open_turn(
             conversation_id=self.conversation_id,
             agent_id=self.agent_id,
-            message=message,
-            sequence_number=self._sequence_counter
+            user_message_seq=self._sequence_counter + 1,  # optimistic
         )
-        
+        self._current_turn_id = turn_id
+        logger.debug("Opened turn %s", turn_id[:8])
+        return turn_id
+
+    async def commit_turn(
+        self,
+        history_snapshot: List[Dict[str, Any]],
+        prev_history_length: int,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+    ) -> None:
+        """
+        Persist the new messages produced during this turn and mark it COMPLETED.
+
+        Parameters
+        ----------
+        history_snapshot
+            The full ordered history after this turn (TurnResult.history_snapshot).
+            Each element is either a Message or a Message.to_dict() dict.
+        prev_history_length
+            Number of non-system messages that were in the context window BEFORE
+            this turn ran.  New messages = snapshot[prev_history_length:].
+        input_tokens / output_tokens
+            Optional token counts from the provider response.
+        """
+        if not self._current_turn_id:
+            logger.error("commit_turn called with no open turn — snapshot discarded.")
+            return
+
+        # --- Reconstruct Message objects from snapshot -----------------
+        raw_messages: List[Message] = []
+        for item in history_snapshot:
+            if isinstance(item, Message):
+                raw_messages.append(item)
+            elif isinstance(item, dict):
+                raw_messages.append(Message.from_dict(item))
+            else:
+                logger.warning("Unexpected item type in history_snapshot: %s", type(item))
+
+        # --- Extract only the NEW messages produced this turn ----------
+        # Slice off everything the orchestrator already had in context.
+        new_messages = raw_messages[prev_history_length:]
+
+        if not new_messages:
+            logger.warning("commit_turn: no new messages in snapshot delta — cancelling turn.")
+            await self.turn_repo.cancel_turn(self._current_turn_id)
+            self._current_turn_id = None
+            return
+
+        # --- Filter and persist ----------------------------------------
+        user_seq: Optional[int] = None
+        assistant_seq: Optional[int] = None
+
+        for msg in new_messages:
+            clean = self._clean_message(msg)
+            if clean is None:
+                continue  # system or fully-empty after cleaning
+
+            self._sequence_counter += 1
+            seq = self._sequence_counter
+
+            await self.message_repo.add_message(
+                conversation_id=self.conversation_id,
+                agent_id=self.agent_id,
+                message=clean,
+                sequence_number=seq,
+                turn_id=self._current_turn_id,
+            )
+
+            if clean.role == Role.USER and user_seq is None:
+                user_seq = seq
+            elif clean.role == Role.MODEL:
+                assistant_seq = seq  # keep updating; last MODEL msg is the final response
+
+        # Back-fill the user_message_seq that was optimistic in begin_turn
+        if user_seq is not None:
+            await self.db.execute(
+                "UPDATE turns SET user_message_seq = ? WHERE id = ?",
+                (user_seq, self._current_turn_id),
+            )
+
+        if assistant_seq is None:
+            logger.warning(
+                "commit_turn: no MODEL message found in delta — cancelling turn %s.",
+                self._current_turn_id[:8],
+            )
+            await self.turn_repo.cancel_turn(self._current_turn_id)
+            self._current_turn_id = None
+            return
+
+        # --- Complete the turn -----------------------------------------
+        await self.turn_repo.complete_turn(
+            turn_id=self._current_turn_id,
+            assistant_message_seq=assistant_seq,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
         await self.conversation_repo.update_conversation_timestamp(self.conversation_id)
 
-        # 3. Trigger Summarization Check
-        # Only trigger on a completed assistant turn (no pending tool calls) so we
-        # always summarize full user→assistant cycles, never mid-chain fragments.
+        completed_turn_id = self._current_turn_id
+        self._current_turn_id = None
+
+        logger.info(
+            "Turn %s committed (user_seq=%s, assistant_seq=%s, new_msgs=%d)",
+            completed_turn_id[:8], user_seq, assistant_seq, len(new_messages),
+        )
+
+        # --- Optional background summarization -------------------------
         if self.enable_summarization and self.auto_summarize:
-            if message.role == Role.ASSISTANT and not message.tool_calls:
-                await self._check_and_summarize()
+            total_tokens = (input_tokens or 0) + (output_tokens or 0)
+            await self._maybe_summarize(total_tokens=total_tokens)
 
-    # Sentinel that marks the start of the injected summary block inside the fused
-    # system prompt. Must match the string used in get_history() exactly.
-    # Single source of truth — change it here and both methods stay in sync.
-    _SUMMARY_INJECTION_MARKER = "\n\n### PREVIOUS CONVERSATION CONTEXT\n"
+    async def cancel_current_turn(self) -> None:
+        """Explicitly cancel the current OPEN turn (e.g. user disconnected)."""
+        if self._current_turn_id:
+            await self.turn_repo.cancel_turn(self._current_turn_id)
+            logger.info("Turn %s cancelled by caller.", self._current_turn_id[:8])
+            self._current_turn_id = None
 
-    @classmethod
-    def _strip_summary_injection(cls, content: Optional[str]) -> Optional[str]:
-        """
-        Remove the injected summary block from a (potentially fused) system prompt.
-
-        get_history() builds:
-            "<original_prompt>\\n\\n### PREVIOUS CONVERSATION CONTEXT\\n..."
-
-        If the agent framework passes that fused string back through add_message(),
-        this method returns only the clean original portion so _original_system_prompt
-        is never contaminated with summary content.
-
-        If the marker is absent the content is returned unchanged — meaning it really
-        is a fresh/new system prompt and should be stored as-is.
-        """
-        if not content:
-            return content
-        marker_pos = content.find(cls._SUMMARY_INJECTION_MARKER)
-        if marker_pos == -1:
-            return content  # No injection present — nothing to strip
-        return content[:marker_pos]
+    # ------------------------------------------------------------------ #
+    # Context retrieval                                                    #
+    # ------------------------------------------------------------------ #
 
     async def get_history(self) -> List[Message]:
         """
-        Constructs the optimized prompt window.
-        Structure: [Fused System Prompt] + [Elastic Window of Recent Messages]
+        Build the prompt window for the next LLM call.
+
+        Structure:
+          [Fused system message]  ← _original_system_prompt + short summary block
+          [Messages from last N COMPLETED turns, excluding summarized coverage]
+
+        Returns a (message_list, non_system_count) tuple so Agent can pass
+        non_system_count as prev_history_length to commit_turn.
         """
         if not self.conversation_id:
             await self.initialize()
 
-        final_history = []
+        history: List[Message] = []
 
-        # --- Step 1: Construct the Fused System Prompt ---
-        system_content_parts = []
-        
+        # ── Fused system message ────────────────────────────────────────
+        system_parts: List[str] = []
+
         if self._original_system_prompt:
-            system_content_parts.append(self._original_system_prompt)
-            
+            system_parts.append(self._original_system_prompt)
+
+        short_summary_row: Optional[Dict[str, Any]] = None
         if self.enable_summarization:
-            # get_latest_short_summary always returns at most ONE row because
-            # upsert_short_summary atomically replaces on every summarization cycle.
-            summary = await self.summary_repo.get_latest_short_summary(self.conversation_id)
-            if summary:
-                # _SUMMARY_INJECTION_MARKER is the prefix _strip_summary_injection
-                # uses to detect and remove this block if the fused message is ever
-                # fed back through add_message(). Keep these two in sync.
-                summary_block = (
-                    f"{self._SUMMARY_INJECTION_MARKER}"
-                    f"The following is a compressed summary of the conversation so far. "
-                    f"Use this to maintain context without repetition:\n{summary}"
-                )
-                system_content_parts.append(summary_block)
-        
-        if system_content_parts:
-            final_history.append(Message(
-                role=Role.SYSTEM,
-                content="\n".join(system_content_parts)
-            ))
-
-        # --- Step 2: Retrieve Elastic Context Window ---
-        # Fetch slightly more than recent_k to give the elastic backward-scan room.
-        buffer_limit = self.recent_k + 15
-        raw_messages = await self.message_repo.get_recent_messages(
-            conversation_id=self.conversation_id,
-            limit=buffer_limit,
-            exclude_system=True
-        )
-
-        if raw_messages:
-            valid_messages    = self._get_context_window(raw_messages, self.recent_k)
-            sanitized_messages = self._validate_conversation_pattern(valid_messages)
-            final_history.extend(sanitized_messages)
-
-        return final_history
-
-    def _get_context_window(self, messages: List[Message], target_k: int) -> List[Message]:
-        """
-        Returns a slice of messages ending at the most recent.
-        Ensures the slice always starts at a clean USER entry point — never in the
-        middle of a tool-call chain.
-
-        Strategy (in order):
-          1. Ideal cut: messages[-target_k:]
-          2. Backward expansion: if the cut lands inside a tool chain, walk back up
-             to 10 steps to find the USER turn that opened the chain.
-          3. Forward fallback: if backward scan couldn't find a clean start, advance
-             from the ideal cut to the first USER message we find.
-          4. Last resort: return the ideal target_k slice as-is so the caller always
-             gets *something* valid rather than an empty list.
-        """
-        total = len(messages)
-        if total <= target_k:
-            return messages
-
-        cutoff_index = total - target_k
-
-        # --- Backward expansion (elastic window) ---
-        scan_limit  = max(0, cutoff_index - 10)
-        current_idx = cutoff_index
-
-        while current_idx > scan_limit:
-            msg = messages[current_idx]
-            if msg.role == Role.USER and not msg.tool_results:
-                # Clean entry point found.
-                return messages[current_idx:]
-            current_idx -= 1
-
-        # --- Forward fallback ---
-        # Backward scan couldn't find a clean USER start.  Advance from the ideal
-        # cutoff until we hit the next USER message.  This may return fewer than
-        # target_k messages, but it guarantees a coherent chain.
-        for i in range(cutoff_index, total):
-            if messages[i].role == Role.USER:
-                return messages[i:]
-
-        # --- Last resort ---
-        # No USER message anywhere in the window (e.g. first few turns are all
-        # assistant/system).  Return the ideal slice; _validate_conversation_pattern
-        # will strip any orphaned leading messages.
-        logger.warning(
-            "_get_context_window: no clean USER start found; "
-            "falling back to raw target_k slice."
-        )
-        return messages[cutoff_index:]
-
-    def _validate_conversation_pattern(self, messages: List[Message]) -> List[Message]:
-        """
-        Sanitizes the message list for LLM consumption:
-          1. Merges consecutive same-role messages into one.
-          2. Drops orphaned leading messages until the first USER turn.
-        """
-        validated = []
-        
-        for msg in messages:
-            # 1. Merge consecutive same-role messages
-            if validated and validated[-1].role == msg.role:
-                prev = validated[-1]
-                
-                if msg.content:
-                    prev.content = (prev.content or "") + "\n\n" + msg.content
-                if msg.tool_calls:
-                    prev.tool_calls = (prev.tool_calls or []) + msg.tool_calls
-                if msg.tool_results:
-                    prev.tool_results = (prev.tool_results or []) + msg.tool_results
-                
-                continue
-            
-            validated.append(msg)
-
-        # 2. Drop leading non-USER messages
-        while validated and validated[0].role != Role.USER:
-            logger.warning(f"Dropping orphaned {validated[0].role} at start of context window.")
-            validated.pop(0)
-
-        # Note on dangling tool calls (validated[-1] is ASSISTANT with tool_calls):
-        # We intentionally leave this alone.  In a streaming / agentic setup the
-        # executor layer is responsible for completing the tool loop before calling
-        # get_history() again.  Silently dropping or rewriting that message would
-        # mask a real orchestration bug.
-
-        return validated
-
-    async def _check_and_summarize(self):
-        """
-        Checks if enough messages have accumulated outside the active window to
-        warrant a summarization job.
-
-        safe_threshold = recent_k + summarization_threshold ensures we never try
-        to summarize messages that are still inside the active context window.
-        """
-        count = await self.message_repo.get_unsummarized_count(self.conversation_id)
-        safe_threshold = self.recent_k + self.summarization_threshold
-        
-        if count >= safe_threshold:
-            task = asyncio.create_task(self._perform_summarization())
-            # Attach a callback so unhandled exceptions are logged rather than
-            # silently discarded.  Without this, asyncio only prints them at GC time.
-            task.add_done_callback(self._on_summarization_done)
-
-    @staticmethod
-    def _on_summarization_done(task: asyncio.Task):
-        """Log any exception raised by the background summarization task."""
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            pass  # Graceful shutdown — not an error
-        except Exception:
-            logger.exception("Background summarization task failed")
-
-    async def _perform_summarization(self):
-        async with self._summarization_lock:
-            messages, start_seq, end_seq = await self.message_repo.get_archivable_messages(
-                conversation_id=self.conversation_id,
-                keep_recent=self.recent_k + 5  # Safety buffer inside the lock
+            short_summary_row = await self.summary_repo.get_short_summary(
+                self.conversation_id
             )
-            
+            if short_summary_row:
+                block = (
+                    f"{_SUMMARY_MARKER}"
+                    f"The following is a compressed summary of the conversation so far. "
+                    f"Use it to maintain context without repetition:\n"
+                    f"{short_summary_row['content']}"
+                )
+                system_parts.append(block)
+
+        if system_parts:
+            history.append(Message(role=Role.SYSTEM, text="\n".join(system_parts)))
+
+        # ── Recent completed turns ──────────────────────────────────────
+        turns = await self.turn_repo.get_recent_completed_turns(
+            conversation_id=self.conversation_id,
+            limit=self.recent_k_turns,
+        )
+
+        # Exclude turns already covered by the short summary to avoid
+        # double-injecting content that is already in the system block.
+        if short_summary_row and turns:
+            covered_end = short_summary_row.get("turn_end_id")
+            if covered_end:
+                turn_ids = [t["id"] for t in turns]
+                if covered_end in turn_ids:
+                    cutoff = turn_ids.index(covered_end) + 1
+                    turns = turns[cutoff:]
+
+        non_system_count = 0
+        if turns:
+            turn_ids = [t["id"] for t in turns]
+            messages = await self.message_repo.get_messages_for_turns(turn_ids)
+            sanitized = self._sanitize(messages)
+            history.extend(sanitized)
+            non_system_count = len(sanitized)
+
+        return history, non_system_count
+
+    # ------------------------------------------------------------------ #
+    # Summarization                                                        #
+    # ------------------------------------------------------------------ #
+
+    async def _maybe_summarize(self, total_tokens: int = 0) -> None:
+        count      = await self.turn_repo.get_completed_turn_count(self.conversation_id)
+        archivable = max(0, count - self.recent_k_turns)
+
+        token_pressure = total_tokens > 0 and total_tokens >= self.token_threshold
+        turn_pressure  = archivable >= self.summarization_threshold
+
+        if token_pressure or turn_pressure:
+            task = asyncio.create_task(self._perform_summarization())
+            task.add_done_callback(_log_task_exception)
+
+    async def _perform_summarization(self) -> None:
+        async with self._summarization_lock:
+            candidate_turns = await self.turn_repo.get_unsummarized_completed_turns(
+                conversation_id=self.conversation_id,
+                exclude_recent=self.recent_k_turns,
+            )
+            if not candidate_turns:
+                return
+
+            turn_ids = [t["id"] for t in candidate_turns]
+            messages = await self.message_repo.get_messages_for_turns(turn_ids)
             if not messages:
                 return
 
+            seqs = [
+                s for t in candidate_turns
+                for s in (t["user_message_seq"], t["assistant_message_seq"])
+                if s is not None
+            ]
+            start_seq, end_seq = min(seqs), max(seqs)
+
+            prev_row = await self.summary_repo.get_short_summary(self.conversation_id)
+            prev_text: Optional[str] = prev_row["content"] if prev_row else None
+
             summary_data = await self._summarizer.summarize_conversations(
-                messages, self.agent_name
+                messages=messages,
+                agent_name=self.agent_name,
+                previous_summary=prev_text,
             )
 
-            if summary_data["short"]:
-                # Atomic replace: HybridSummaryRepository.upsert_short_summary deletes
-                # the old 'short' row and inserts a new one in a single transaction.
-                # This is what prevents summary accumulation in the system prompt.
-                await self.summary_repo.upsert_short_summary(
-                    conversation_id=self.conversation_id,
-                    content=summary_data["short"],
-                    metadata=summary_data["metadata"],
-                    agent_id=self.agent_id,
-                    agent_name=self.agent_name
-                )
+            if not summary_data.get("short"):
+                logger.warning("Summarizer returned no short summary — skipping upsert.")
+                return
 
-            # Persist the detailed long-form summary for RAG recall separately.
-            if summary_data["long"]:
-                await self.summary_repo.add_summary(
+            await self.summary_repo.upsert_short_summary(
+                conversation_id=self.conversation_id,
+                agent_id=self.agent_id,
+                content=summary_data["short"],
+                message_start_seq=start_seq,
+                message_end_seq=end_seq,
+                turn_start_id=candidate_turns[0]["id"],
+                turn_end_id=candidate_turns[-1]["id"],
+                metadata=summary_data.get("metadata", {}),
+                agent_name=self.agent_name,
+            )
+
+            if summary_data.get("long"):
+                await self.summary_repo.add_long_summary(
                     conversation_id=self.conversation_id,
                     agent_id=self.agent_id,
-                    summary_type="long",
                     content=summary_data["long"],
-                    importance=summary_data["importance"],
+                    importance=summary_data.get("importance", 5),
                     message_start_seq=start_seq,
                     message_end_seq=end_seq,
                     message_count=len(messages),
-                    tags=summary_data["metadata"].get("key_topics", []),
-                    metadata=summary_data["metadata"],
-                    agent_name=self.agent_name
+                    turn_start_id=candidate_turns[0]["id"],
+                    turn_end_id=candidate_turns[-1]["id"],
+                    tags=summary_data.get("metadata", {}).get("key_topics", []),
+                    metadata=summary_data.get("metadata", {}),
+                    agent_name=self.agent_name,
                 )
-                
-            # Mark processed messages so they are excluded from future jobs.
-            await self.message_repo.mark_as_summarized(
-                conversation_id=self.conversation_id,
-                start_seq=start_seq,
-                end_seq=end_seq
+
+            await self.turn_repo.mark_turns_summarized(turn_ids)
+            logger.info(
+                "Summarized %d turns (seqs %d→%d), conversation %s",
+                len(candidate_turns), start_seq, end_seq, self.conversation_id[:8],
             )
+
+    # ------------------------------------------------------------------ #
+    # Helpers                                                              #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _clean_message(msg: Message) -> Optional[Message]:
+        """
+        Return a DB-safe copy of the message:
+          - Drop system messages entirely (never stored).
+          - Strip thought_text and reasoning_text (debug artifacts, not persisted).
+          - Return None if the result would be empty/useless.
+        """
+        if msg.role == Role.SYSTEM:
+            return None
+
+        return Message(
+            role=msg.role,
+            kind=msg.kind,
+            text=msg.text,
+            tool_calls=msg.tool_calls or [],
+            tool_results=msg.tool_results or [],
+            structured_response=msg.structured_response,
+            thought_text=None,       # intentionally dropped
+            agent_id=msg.agent_id,
+        )
+
+    @staticmethod
+    def _strip_summary_injection(content: Optional[str]) -> Optional[str]:
+        if not content:
+            return content
+        idx = content.find(_SUMMARY_MARKER)
+        return content[:idx] if idx != -1 else content
+
+    @staticmethod
+    def _sanitize(messages: List[Message]) -> List[Message]:
+        """
+        Merge consecutive same-role messages; drop orphaned leading non-USER rows.
+        """
+        merged: List[Message] = []
+        for msg in messages:
+            if merged and merged[-1].role == msg.role:
+                prev = merged[-1]
+                prev.text = (
+                    ((prev.text or "") + "\n\n" + (msg.text or "")).strip() or None
+                )
+                prev.tool_calls   = (prev.tool_calls   or []) + (msg.tool_calls   or [])
+                prev.tool_results = (prev.tool_results or []) + (msg.tool_results or [])
+                continue
+            merged.append(msg)
+
+        while merged and merged[0].role != Role.USER:
+            logger.warning("Dropping orphaned %s at context-window start.", merged[0].role)
+            merged.pop(0)
+
+        return merged
+
+    # ------------------------------------------------------------------ #
+    # Misc public helpers                                                  #
+    # ------------------------------------------------------------------ #
+
+    async def start_fresh_conversation(self) -> None:
+        await self.conversation_repo.end_all_conversations(self.agent_id)
+        self.conversation_id = None
+        self._sequence_counter = 0
+        self._current_turn_id = None
+        await self.initialize()
+
+    async def get_statistics(self) -> Dict[str, Any]:
+        if not self.conversation_id:
+            return {}
+        count = await self.message_repo.get_message_count(self.conversation_id)
+        turn_count = await self.turn_repo.get_completed_turn_count(self.conversation_id)
+        return {
+            "conversation_id": self.conversation_id,
+            "total_messages": count,
+            "completed_turns": turn_count,
+        }
+
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("Background summarization task raised an unhandled exception")
