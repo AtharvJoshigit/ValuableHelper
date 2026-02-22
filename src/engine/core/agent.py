@@ -30,6 +30,7 @@ from contextlib import asynccontextmanager
 from app.app_context import get_app_context
 from engine.core.orchstrator import AgentOrchestrator
 from engine.core.provide import get_provider
+from engine.core.turn_manager import complete_model_turn
 from engine.core.types import StreamChunk, AgentError, TurnResultChunk
 from engine.core.memory_manager import MemoryManager
 from engine.providers.google.provider import GoogleProvider
@@ -41,6 +42,7 @@ from database.base import BaseDatabase
 from domain.event import Event, EventType
 from engine.schemas.message import Message, MessageKind, Role
 from engine.schemas.tool_result import ToolCall
+from engine.schemas.turn_result import LoopExitReason
 
 logger = logging.getLogger(__name__)
 
@@ -209,14 +211,15 @@ class Agent:
                     history=history,
                     tools=tools,
                     max_iterations=self.max_steps,
+                    system_prompt=self.system_prompt,
                 )
                 async for chunk in orchestrator.run(input_text):
                     if isinstance(chunk, StreamChunk):
                         yield chunk
                     elif isinstance(chunk, TurnResultChunk):
                         turn_result = chunk.turn_result
-                        # yield StreamChunk(content=turn_result.response)
-                logger.info(f"Turn result : {turn_result}")
+                        final_msg = f"\n-------------- \n Tools Called: {turn_result.tool_calls_made}"
+                        yield StreamChunk(content=final_msg)
             except Exception as e:
                 # Orchestrator crashed — cancel the open turn so it never
                 # appears in history or summarization candidates.
@@ -227,19 +230,44 @@ class Agent:
 
             # ── 4. Commit the turn ──────────────────────────────────────────
             if turn_result is None:
-                # Orchestrator finished without emitting a TurnResultChunk.
-                # Treat as a failed turn.
                 await self.memory.cancel_current_turn()
                 logger.error("No TurnResultChunk received — turn cancelled.")
                 return
 
             t = turn_result
+            # turn_metadata might be a dict or an object depending on your orchestrator
+            turn_metadata = getattr(t, "turn_metadata", None) or {}
+
+            # Safely get the TokenUsage object (class instance)
+            # If missing, used_tokens will be None
+            used_tokens = getattr(turn_metadata, "usage", None) 
+
+            logger.info(f"Used Tokens for the Turn: {used_tokens}")
+
+            # Common arguments for both commit_turn calls
+            # getattr(used_tokens, "attr", 0) ensures you get a number, not None, for the DB
+            commit_kwargs = {
+                "prev_history_length": prev_history_length,
+                "input_tokens": getattr(used_tokens, "input_tokens", 0),
+                "output_tokens": getattr(used_tokens, "output_tokens", 0),
+            }
+
+            if t.exit_reason != LoopExitReason.COMPLETED:
+                history = complete_model_turn(t, input_text)
+                logger.info("histoyr: %s", history)
+                logger.info(f"Committing Turn for {t.exit_reason}...")
+                await self.memory.commit_turn(
+                    history_snapshot=history,
+                    delta=True,
+                    **commit_kwargs
+                )
+                return
+
             await self.memory.commit_turn(
                 history_snapshot=t.history_snapshot,
-                prev_history_length=prev_history_length,
-                input_tokens=getattr(t, "input_tokens", None),
-                output_tokens=getattr(t, "output_tokens", None),
+                **commit_kwargs
             )
+
                 
         except AgentError:
             raise

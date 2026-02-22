@@ -27,7 +27,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from database.base import BaseDatabase
-from engine.core.summerizer import MemorySummarizer
+from engine.core.summarizer import MemorySummarizer
 from engine.schemas.message import Message, MessageKind, Role
 from rag.stores.memory import MemoryVectorStore
 from repositories.conversation_repository import ConversationRepository
@@ -161,6 +161,7 @@ class MemoryManager:
         prev_history_length: int,
         input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
+        delta: bool = False,
     ) -> None:
         """
         Persist the new messages produced during this turn and mark it COMPLETED.
@@ -192,7 +193,7 @@ class MemoryManager:
 
         # --- Extract only the NEW messages produced this turn ----------
         # Slice off everything the orchestrator already had in context.
-        new_messages = raw_messages[prev_history_length:]
+        new_messages = raw_messages[prev_history_length:] if not delta else raw_messages
 
         if not new_messages:
             logger.warning("commit_turn: no new messages in snapshot delta — cancelling turn.")
@@ -242,6 +243,7 @@ class MemoryManager:
             return
 
         # --- Complete the turn -----------------------------------------
+
         await self.turn_repo.complete_turn(
             turn_id=self._current_turn_id,
             assistant_message_seq=assistant_seq,
@@ -262,6 +264,7 @@ class MemoryManager:
         # --- Optional background summarization -------------------------
         if self.enable_summarization and self.auto_summarize:
             total_tokens = (input_tokens or 0) + (output_tokens or 0)
+            logger.info("I am here in enable_summarization")
             await self._maybe_summarize(total_tokens=total_tokens)
 
     async def cancel_current_turn(self) -> None:
@@ -294,8 +297,8 @@ class MemoryManager:
         # ── Fused system message ────────────────────────────────────────
         system_parts: List[str] = []
 
-        if self._original_system_prompt:
-            system_parts.append(self._original_system_prompt)
+        # if self._original_system_prompt:
+        #     system_parts.append(self._original_system_prompt)
 
         short_summary_row: Optional[Dict[str, Any]] = None
         if self.enable_summarization:
@@ -345,12 +348,14 @@ class MemoryManager:
     # ------------------------------------------------------------------ #
 
     async def _maybe_summarize(self, total_tokens: int = 0) -> None:
-        count      = await self.turn_repo.get_completed_turn_count(self.conversation_id)
+        count= await self.turn_repo.get_completed_turn_count(self.conversation_id)
+        logger.info("count: %s", count)
         archivable = max(0, count - self.recent_k_turns)
-
+        logger.info("Archivable: %s \n Summarization Threshold: %s \n Total Token : %s \n Token Threshold : %s", archivable, self.summarization_threshold, total_tokens, self.token_threshold)
         token_pressure = total_tokens > 0 and total_tokens >= self.token_threshold
         turn_pressure  = archivable >= self.summarization_threshold
-
+        
+        logger.info("Token Pressure: %s, Turn Pressure: %s", token_pressure, turn_pressure)
         if token_pressure or turn_pressure:
             task = asyncio.create_task(self._perform_summarization())
             task.add_done_callback(_log_task_exception)

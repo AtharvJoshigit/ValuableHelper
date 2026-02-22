@@ -45,13 +45,7 @@ class RunCommandTool(BaseTool):
     command: Optional[str] = Field(default=None, description="The shell command to execute.")
     allowed_commands: Optional[List[str]] = Field(
         default=None,
-        description="Optional list of whitelisted commands. If not provided, uses default safe commands."
-        # This is the key part for Google's schema
-        # json_schema_extra={
-        #     "type": "array",
-        #     "items": {"type": "string"},
-        #     "default": DEFAULT_SAFE_COMMANDS
-        # }
+        description="Optional list of whitelisted commands. If not provided, uses default safe commands. only provide the command do not provide path or stings"
     )
 
     def execute(self, **kwargs) -> Any:

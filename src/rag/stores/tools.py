@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Mapping
-from src.rag.stores.base import BaseVectorStore
-from src.rag.schema import ToolSchema, VectorDocument
-from src.rag.config import settings
+from rag.stores.base import BaseVectorStore
+from rag.schema import ToolSchema, VectorDocument
+from rag.config import settings
 import json
 import logging
 

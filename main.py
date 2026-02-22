@@ -173,15 +173,15 @@ class ApplicationManager:
                 'temperature': 1.0,
                 "model_id": "gemini-3-flash-preview",
                 "provider": "google",
-                "max_steps": 5,
+                "max_steps": 15,
                 "additional_params": {
                     "include_thoughts": False,
                 },
                 # Memory settings (NEW)
                 "enable_memory_summarization": self.enable_memory,
                 "agent_name": "ValH Main Agent",
-                "memory_recent_k": 20,  # More context for main agent
-                "memory_summarization_threshold": 55,
+                "memory_recent_k": 10,  # More context for main agent
+                "memory_summarization_threshold": 10,
                 "session_timeout_hours": 48,  # 2 days for main conversations
             }
 

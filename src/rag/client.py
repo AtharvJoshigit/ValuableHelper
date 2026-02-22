@@ -1,7 +1,7 @@
 import chromadb
 from chromadb.config import Settings
-from src.rag.config import settings
-from src.rag.embeddings import get_embedding_function
+from rag.config import settings
+from rag.embeddings import get_embedding_function
 import logging
 
 logger = logging.getLogger(__name__)

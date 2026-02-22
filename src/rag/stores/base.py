@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
-from src.rag.client import get_chroma_db
-from src.rag.schema import VectorDocument, SearchResult
+from rag.client import get_chroma_db
+from rag.schema import VectorDocument, SearchResult
 import uuid
 
 class BaseVectorStore:

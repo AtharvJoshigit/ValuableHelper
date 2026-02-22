@@ -28,9 +28,11 @@ import logging
 from typing import Any, Dict, List
 
 from engine.schemas.message import Message, MessageKind, Role
+from engine.schemas.turn_result import LoopExitReason, TurnResult
 
 logger = logging.getLogger(__name__)
 
+MAX_ERROR_TOKENS = 50
 
 # ---------------------------------------------------------------------------
 # Abstract history validation
@@ -75,7 +77,8 @@ def validate_message_ordering(messages: List[Message]) -> List[Message]:
             )
         else:
             result.append(msg)
-
+    last_msg = messages[-1]
+    
     # Validate function_call → function_response pairing
     _validate_tool_call_pairing(result)
 
@@ -156,6 +159,49 @@ def _validate_tool_call_pairing(messages: List[Message]) -> None:
                 )
 
 
+def truncate_text(text, max_tokens=MAX_ERROR_TOKENS):
+    # naive token limiter (safe + simple)
+    words = text.split()
+    return " ".join(words[:max_tokens])
+
+
+def complete_model_turn(
+    turn_result: TurnResult,
+    user_input: str,
+) -> List[Message]:  # Removed | None to guarantee a list return
+    # 1. Initialize with the user message
+    updated_history = [Message.user(user_input)]
+    
+    # 2. Guard Clause: If there is no response text, return a fallback immediately
+    if not turn_result.response or not turn_result.response.response_text:
+        updated_history.append(
+            Message.model_text("The previous attempt failed due to an internal execution issue. No changes were applied.")
+        )
+        return updated_history
+
+    # 3. Handle specific exit reasons
+    if turn_result.exit_reason == LoopExitReason.ERROR:
+        short_error = truncate_text(turn_result.response.response_text)
+        updated_history.append(
+            Message.model_text(f"The previous attempt failed due to an internal error: {short_error}")
+        )
+        return updated_history
+
+    if turn_result.exit_reason == LoopExitReason.MAX_ITERATIONS:
+        updated_history.append(
+            Message.model_text(
+                "The maximum number of reasoning steps was reached. "
+                "Some progress may have been made. Would you like me to continue?"
+            )
+        )
+        return updated_history
+
+    # 4. Final Fallback (if response exists but exit reason is unknown)
+    updated_history.append(Message.model_text(turn_result.response.response_text))
+    return updated_history
+
+    
+    
 # ---------------------------------------------------------------------------
 # History serialisation (for DB persistence)
 # ---------------------------------------------------------------------------

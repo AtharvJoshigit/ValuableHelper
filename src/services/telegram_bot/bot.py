@@ -8,7 +8,7 @@ from typing import Dict, Optional
 from app.app_context import get_app_context
 from infrastructure.command_bus import CommandBus
 from infrastructure.singleton import Singleton
-from src.domain.event import Event, EventType
+from domain.event import Event, EventType
 from telegram import InlineKeyboardMarkup, Update, constants
 from telegram.request import HTTPXRequest
 from telegram.error import BadRequest, TimedOut, NetworkError, RetryAfter, TelegramError
@@ -22,8 +22,8 @@ from telegram.ext import (
     filters,
 )
 
-from src.services.notification_service import get_notification_service
-from src.services.telegram_bot.config import AUTHORIZED_USERS
+from services.notification_service import get_notification_service
+from services.telegram_bot.config import AUTHORIZED_USERS
 
 # Configure Logging
 logging.basicConfig(
@@ -276,12 +276,12 @@ class TelegramBotService:
 
         # Determine parse mode
         parse_mode = constants.ParseMode.HTML if is_final else None
-
+        await self._send_new_message(chat_id, safe_text, parse_mode, reply_markup, now)
         # Send new message or edit existing
-        if chat_id not in _bot_messages:
-            await self._send_new_message(chat_id, safe_text, parse_mode, reply_markup, now)
-        else:
-            await self._edit_existing_message(chat_id, safe_text, parse_mode, reply_markup, now, is_final)
+        # if chat_id not in _bot_messages:
+        #     await self._send_new_message(chat_id, safe_text, parse_mode, reply_markup, now)
+        # else:
+        #     await self._edit_existing_message(chat_id, safe_text, parse_mode, reply_markup, now, is_final)
 
     async def _send_new_message(
         self, 

@@ -49,6 +49,7 @@ from engine.schemas.response import AgentResponse
 from engine.schemas.tool_result import ToolCall
 from engine.providers.google.adapter import (
     build_google_tools,
+    parse_gemini_usage,
     validate_and_fix_history,
     parse_agent_response,
     pydantic_to_google_schema,
@@ -81,6 +82,7 @@ class GoogleProvider:
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
         on_text_chunk: Optional[Callable[[str], None]] = None,
+        use_response_schema: bool = False,
         **additional_params,
     ) -> None:
         self.model_id = model_id
@@ -89,7 +91,7 @@ class GoogleProvider:
         self.max_tokens = max_tokens
         self.on_text_chunk = on_text_chunk
         self.system_instruction = system_instruction
-
+        self.use_response_schema = use_response_schema
         api_key = api_key or os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError(
@@ -108,6 +110,7 @@ class GoogleProvider:
         tools: List[BaseTool],
         *,
         tool_mode: bool,
+        system_pomrpt : Optional[str] = None,
     ) -> types.GenerateContentConfig:
         """
         Build config that avoids the structured-output + tools mutual-
@@ -116,9 +119,10 @@ class GoogleProvider:
         tool_mode=True  → include tools, omit response_schema.
         tool_mode=False → include response_schema, omit tools.
         """
+        logger.info(f"system_pomrpt length: {len(system_pomrpt) if system_pomrpt else 0}")
         config_kwargs: dict = {
             "temperature": self.temperature,
-            "system_instruction": self.system_instruction,
+            "system_instruction": system_pomrpt or self.system_instruction,
         }
         if self.top_p is not None:
             config_kwargs["top_p"] = self.top_p
@@ -143,6 +147,7 @@ class GoogleProvider:
         self,
         history: List[Message],
         tools: Optional[List[BaseTool]] = None,
+        system_prompt: Optional[str]  = None,
     ) -> ProviderResult:
         """
         Call Gemini and return (agent_response, reasoning_text, tool_calls).
@@ -157,15 +162,17 @@ class GoogleProvider:
         if tools is None:
             tools = []
 
-        tool_mode = bool(tools)
+        tool_mode = not self.use_response_schema
         print(f"tool Mode : {tool_mode}")
         try:
             history = validate_message_ordering(history)
             contents = validate_and_fix_history(history)
-            config = self._build_config(tools, tool_mode=tool_mode)
+            config = self._build_config(
+                system_pomrpt=system_prompt, 
+                tool_mode=tool_mode,
+                tools=tools,
+                )
 
-            logger.info(f"Build config {config.response_schema}")
-            logger.info(f'Google Contents : {contents}') 
             response = await self.client.aio.models.generate_content(
                 model=self.model_id,
                 contents=contents,
@@ -173,7 +180,7 @@ class GoogleProvider:
             )
         except Exception as exc:
             logger.error("Google API error: %s", exc, exc_info=True)
-            return None, None, []
+            raise exc
 
         # ------------------------------------------------------------------
         # Parse response parts
@@ -185,7 +192,6 @@ class GoogleProvider:
         try:
             candidate = response.candidates[0]
             content = candidate.content
-
             for part in (content.parts or []):
 
                 # ── Thinking / reasoning part ───────────────────────────
@@ -250,6 +256,7 @@ class GoogleProvider:
         # Parse AgentResponse from text
         # ------------------------------------------------------------------
         agent_response: Optional[AgentResponse] = None
+        metadata = parse_gemini_usage(response.usage_metadata, response.model_version)
 
         if not tool_calls and text_parts:
             raw_text = "".join(text_parts)
@@ -280,4 +287,4 @@ class GoogleProvider:
                 response_text="".join(text_parts),
                 is_final=False
             )
-        return agent_response, reasoning_text, tool_calls, response
+        return agent_response, reasoning_text, tool_calls, response, metadata

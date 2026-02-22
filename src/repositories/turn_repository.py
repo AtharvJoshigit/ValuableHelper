@@ -190,4 +190,5 @@ class TurnRepository:
             """,
             (conversation_id,),
         )
+        logger.info(row)
         return row["cnt"] if row else 0

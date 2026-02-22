@@ -10,7 +10,7 @@ from engine.core.agent import Agent
 from engine.core.agent_factory import get_global_database
 from engine.registry.library.agent_management_tool import CreateAgentTool, SwitchAgentTool
 from engine.registry.library.dynamic_tool_creator import DynamicToolCreatorTool
-from engine.registry.library.filesystem_tools import ListDirectoryTool, ReadFileTool
+from engine.registry.library.filesystem_tools import CreateFileTool, ListDirectoryTool, ReadFileTool, SearchAndReplaceTool
 from engine.registry.library.memory_retrieval_tool import MemoryRetrievalTool
 from engine.registry.library.switch_model_tool import SwitchModelTool
 from engine.registry.library.system_tools import RunCommandTool
@@ -75,6 +75,8 @@ class MainAgent(BaseAgent):
         registry = ToolRegistry()
         registry.register(ListDirectoryTool())
         registry.register(ReadFileTool())
+        registry.register(CreateFileTool())
+        registry.register(SearchAndReplaceTool())
         registry.register(SwitchModelTool())
         registry.register(RunCommandTool())
         registry.register(CreateAgentTool())
@@ -179,12 +181,12 @@ class MainAgent(BaseAgent):
             
             full_response_text = ""
             current_status = "🤔 Thinking..."
-            
+            last_message = ""
             # Stream response
             async for chunk in agent.stream(text):
                 if chunk.content:
                     full_response_text += chunk.content
-                    
+                    last_message = chunk.content
                     if source == "web_ui":
                         # Push to UI via WebSocket
                         await self.ws_manager.broadcast({
@@ -197,7 +199,7 @@ class MainAgent(BaseAgent):
                     else:
                         await self.bot.send_or_edit(
                             chat_id=chat_id, 
-                            text=f"{full_response_text}\n\n{current_status}"
+                            text=chunk.content
                         )
                 
                 if chunk.tool_call:
@@ -217,7 +219,7 @@ class MainAgent(BaseAgent):
             if source == "telegram":
                 await self.bot.send_or_edit(
                     chat_id=chat_id, 
-                    text=full_response_text + "\n ✔️", 
+                    text=last_message + "\n ✔️", 
                     is_final=True
                 )
             elif source == "web_ui":

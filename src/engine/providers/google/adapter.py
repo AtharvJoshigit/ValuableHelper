@@ -37,6 +37,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Type
 
+from engine.schemas.turn_result import ModelCallMetadata, TokenUsage
 from google.genai import types
 
 from engine.registry.base_tool import BaseTool
@@ -137,6 +138,40 @@ def parse_agent_response(text: str) -> Optional[AgentResponse]:
 
 
 # ---------------------------------------------------------------------------
+# Model → Gemini Model Usage
+# ---------------------------------------------------------------------------
+
+
+def parse_gemini_usage(
+    usage_metadata,
+    model_name: str,
+    latency_ms: int | None = None,
+    request_id: str | None = None,
+) -> ModelCallMetadata:
+    """
+    Converts Gemini GenerateContentResponseUsageMetadata
+    into generic ModelCallMetadata schema.
+    """
+
+    input_tokens = usage_metadata.prompt_token_count or 0
+    output_tokens = usage_metadata.candidates_token_count or 0
+    total_tokens = usage_metadata.total_token_count or (
+        input_tokens + output_tokens
+    )
+
+    return ModelCallMetadata(
+        provider="google",
+        model_name=model_name,
+        latency_ms=latency_ms,
+        request_id=request_id,
+        usage=TokenUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=usage_metadata.cached_content_token_count,
+        ),
+    )
+# ---------------------------------------------------------------------------
 # Tool definition → Gemini tools format
 # ---------------------------------------------------------------------------
 
@@ -222,7 +257,6 @@ def validate_and_fix_history(messages: List[Message]) -> List[types.Content]:
 
     for msg in messages:
         
-        logger.info(f"Message Kind: {msg.kind}")
         # ── Model tool-call turn ────────────────────────────────────────
         if msg.role == Role.MODEL and msg.kind == MessageKind.TOOL_CALL:
             parts: List[types.Part] = []

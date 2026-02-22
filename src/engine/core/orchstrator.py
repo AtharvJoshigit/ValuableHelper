@@ -42,21 +42,22 @@ from engine.registry.base_tool import BaseTool
 from engine.schemas.message import Message
 from engine.schemas.response import AgentResponse
 from engine.schemas.tool_result import ToolCall, ToolResult
-from engine.schemas.turn_result import TurnResult
+from engine.schemas.turn_result import LoopExitReason, ModelCallMetadata, TurnResult
 from engine.providers.openai.adapter import AgentResponseParseError
 
 logger = logging.getLogger(__name__)
 
 
-class LoopExitReason(str, Enum):
-    COMPLETED = "completed"
-    MAX_ITERATIONS = "max_iterations"
-    ERROR = "error"
-    NO_TOOL_EXECUTOR = "no_tool_executor"
-
-
 StreamEvent = Union[StreamChunk, TurnResultChunk]
 
+continue_system_ms = """
+The previous assistant response was empty or incomplete.
+The task is still active and must be completed.
+Continue generating the remaining content.
+Do not restart from the beginning.
+Do not call any tool again unless strictly necessary.
+Finish the task completely.
+"""
 
 class AgentOrchestrator:
     """
@@ -92,6 +93,7 @@ class AgentOrchestrator:
         max_iterations: int = 10,
         on_text_chunk: Optional[Callable[[str], None]] = None,
         tool_router=None,
+        system_prompt : Optional[str] = None,
     ) -> None:
         self.provider = provider
         self.max_iterations = max_iterations
@@ -101,6 +103,8 @@ class AgentOrchestrator:
         self.tool_executor = execution_engine
         self.tool_router = tool_router
         self.last_exit_reason: Optional[LoopExitReason] = None
+        self.empty_response_threshold = 5
+        self.system_prompt = system_prompt
 
     # ------------------------------------------------------------------
     # Public API
@@ -118,7 +122,8 @@ class AgentOrchestrator:
         last_response: Optional[AgentResponse] = None
         total_tool_calls = 0
         last_thought: Optional[str] = None
-
+        empty_response_counter = 0
+        
         for iteration in range(self.max_iterations):
             logger.info(
                 "Agentic loop — iteration %d / %d",
@@ -133,14 +138,13 @@ class AgentOrchestrator:
             # its adapter.
             # ----------------------------------------------------------
             try:
-                agent_response, thought_text, tool_calls, raw_response = (
+                agent_response, thought_text, tool_calls, raw_response, metadata = (
                     await self.provider.call_model(
                         history=self.history,
                         tools=self.current_tools,
+                        system_prompt=self.system_prompt,
                     )
                 )
-                logger.info(f"\n\n\n\n {agent_response} \n\n\n\n")
-                # logger.info(f"{self.history[-1]} \n\n")
             except AgentResponseParseError as exc:
                 # Model returned valid JSON that did not match AgentResponse.
                 # Feed the validation error back so the model can self-correct.
@@ -168,6 +172,7 @@ class AgentOrchestrator:
                         iteration + 1,
                         total_tool_calls,
                         last_thought,
+                        metadata,
                     )
                 )
                 return
@@ -177,6 +182,17 @@ class AgentOrchestrator:
 
             # Unrecoverable: provider returned nothing at all.
             if agent_response is None and not tool_calls:
+                empty_response_counter += 1
+                
+                if empty_response_counter <= self.empty_response_threshold: 
+                    self.history.append(
+                        Message.system(continue_system_ms)
+                    )
+                    yield StreamChunk(
+                        content=f"{empty_response_counter} / {self.empty_response_threshold} System: Receieved empty. conitnuing"
+                        )
+                    continue
+                
                 logger.error("Provider returned empty result — exiting loop.")
                 self.last_exit_reason = LoopExitReason.ERROR
                 yield TurnResultChunk(
@@ -191,6 +207,7 @@ class AgentOrchestrator:
                         iteration + 1,
                         total_tool_calls,
                         last_thought,
+                        metadata,
                     )
                 )
                 return
@@ -228,6 +245,7 @@ class AgentOrchestrator:
                             iteration + 1,
                             total_tool_calls,
                             last_thought,
+                            metadata,
                         )
                     )
                     return
@@ -246,7 +264,7 @@ class AgentOrchestrator:
                 # Model is not done yet.
                 if not agent_response.is_final and not tool_calls:
                     self.history.append(
-                        Message.user("Continue. Complete your objective.")
+                        Message.system(continue_system_ms)
                     )
                     continue
             # ----------------------------------------------------------
@@ -281,6 +299,7 @@ class AgentOrchestrator:
                             iteration + 1,
                             total_tool_calls,
                             last_thought,
+                            metadata,
                         )
                     )
                     return
@@ -297,7 +316,6 @@ class AgentOrchestrator:
         # ------------------------------------------------------------------
         logger.warning("Max iterations (%d) reached.", self.max_iterations)
         self.last_exit_reason = LoopExitReason.MAX_ITERATIONS
-        logger.info(f"\n\n History \n\n{self.history}\n\n")
         final_response = last_response or AgentResponse(
             response_text="Reached maximum iterations without completing the task.",
             is_final=True,
@@ -312,6 +330,7 @@ class AgentOrchestrator:
                 self.max_iterations,
                 total_tool_calls,
                 last_thought,
+                metadata,
             )
         )
 
@@ -356,6 +375,7 @@ class AgentOrchestrator:
         iterations_used: int,
         tool_calls_made: int,
         last_thought: Optional[str],
+        metatdata: Optional[ModelCallMetadata],
     ) -> TurnResult:
         self.last_exit_reason = exit_reason
         return TurnResult(
@@ -365,4 +385,5 @@ class AgentOrchestrator:
             tool_calls_made=tool_calls_made,
             history_snapshot=messages_to_history_dicts(self.history),
             last_thought_text=last_thought,
+            turn_metadata=metatdata,
         )
