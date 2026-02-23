@@ -28,8 +28,8 @@ from typing import Optional, List, AsyncIterator
 from contextlib import asynccontextmanager
 
 from app.app_context import get_app_context
+from engine.core.builder import build_turn_prompt
 from engine.core.orchstrator import AgentOrchestrator
-from engine.core.provide import get_provider
 from engine.core.turn_manager import complete_model_turn
 from engine.core.types import StreamChunk, AgentError, TurnResultChunk
 from engine.core.memory_manager import MemoryManager
@@ -40,7 +40,7 @@ from engine.executors.execution_engine import ExecutionEngine
 from engine.core.agent_instance_manager import AgentConfig
 from database.base import BaseDatabase
 from domain.event import Event, EventType
-from engine.schemas.message import Message, MessageKind, Role
+from engine.schemas.message import MessageKind, Role
 from engine.schemas.tool_result import ToolCall
 from engine.schemas.turn_result import LoopExitReason
 
@@ -203,7 +203,8 @@ class Agent:
             tools = self.registry.get_all_tools()
             logger.info(f"Tools count : {len(tools)}")
             turn_result: Optional[TurnResultChunk] = None
-
+            system_prompt = build_turn_prompt(self.system_prompt)
+            
             try:
                 orchestrator = AgentOrchestrator(
                     provider=self.provider,
@@ -211,15 +212,15 @@ class Agent:
                     history=history,
                     tools=tools,
                     max_iterations=self.max_steps,
-                    system_prompt=self.system_prompt,
+                    system_prompt=system_prompt,
                 )
                 async for chunk in orchestrator.run(input_text):
                     if isinstance(chunk, StreamChunk):
                         yield chunk
                     elif isinstance(chunk, TurnResultChunk):
                         turn_result = chunk.turn_result
-                        final_msg = f"\n-------------- \n Tools Called: {turn_result.tool_calls_made}"
-                        yield StreamChunk(content=final_msg)
+                        final_msg = f"Tools calls: {turn_result.tool_calls_made}"
+                        yield StreamChunk(content=final_msg, is_final=True)
             except Exception as e:
                 # Orchestrator crashed — cancel the open turn so it never
                 # appears in history or summarization candidates.

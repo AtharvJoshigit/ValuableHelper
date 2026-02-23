@@ -36,7 +36,7 @@ class MemorySchema(BaseModel):
     importance: int = Field(default=5, ge=1, le=10)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     message_count: Optional[int] = None
-    tags: Optional[str] = None
+    tags: Optional[List[str]] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(

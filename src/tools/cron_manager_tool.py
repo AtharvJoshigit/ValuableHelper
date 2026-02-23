@@ -6,7 +6,7 @@ from pydantic import Field
 from engine.registry.base_tool import BaseTool
 from services.cron_service import cron_service
 from infrastructure.command_bus import CommandBus
-from src.domain.event import Event, EventType
+from domain.event import Event, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class CronManagerTool(BaseTool):
             
             # Callback logic: Send a System Message event to the Main Agent
             async def cron_callback(instr):
-                from src.services.telegram_bot.config import ADMIN_USER_IDS
+                from services.telegram_bot.config import ADMIN_USER_IDS
                 target_chat_id = ADMIN_USER_IDS[0] if ADMIN_USER_IDS else 0
                 
                 if target_chat_id == 0:

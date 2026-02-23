@@ -130,7 +130,8 @@ class GoogleProvider:
             config_kwargs["max_output_tokens"] = self.max_tokens
 
         if tool_mode:
-            config_kwargs["tools"] = build_google_tools(tools)
+            if tools:
+                config_kwargs["tools"] = build_google_tools(tools)
             # Do NOT set response_schema — mutual exclusion with tools.
         else:
             config_kwargs["response_schema"] = pydantic_to_google_schema(AgentResponse)

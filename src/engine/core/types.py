@@ -60,6 +60,7 @@ class StreamChunk(BaseModel):
     tool_call: Optional[ToolCall] = None
     tool_result: Optional[ToolResult] = None
     permission_request: Optional[List[ToolCall]] = None
+    is_final: bool = False
     # usage: Optional[UsageMetadata] = None
     # finish_reason: Optional[str] = None
     

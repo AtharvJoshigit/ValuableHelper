@@ -1,5 +1,5 @@
 import asyncio
-from src.domain.event import Event
+from domain.event import Event
 
 class CommandBus:
     _instances = {}

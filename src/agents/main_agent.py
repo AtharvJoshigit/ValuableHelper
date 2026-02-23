@@ -18,6 +18,7 @@ from engine.registry.library.telegram_tools import SendTelegramMessageTool
 from engine.registry.tool_registry import ToolRegistry
 from engine.registry.tool_discovery import ToolDiscovery
 from services.notification_service import get_notification_service
+from services.response_manager import ResponseManager
 from infrastructure.websocket_manager import get_websocket_manager
 from domain.event import Event, EventType
 
@@ -47,12 +48,13 @@ class MainAgent(BaseAgent):
         }
         if config:
             default_config.update(config)
-        print(f"--- {default_config}")
+        
         super().__init__(default_config)
 
         self.command_bus = get_app_context().command_bus
         self.bot = bot_gateway
         self.notification_service = get_notification_service()
+        self.response_manager = ResponseManager(bot_gateway)
         self.running = True
         self.ws_manager = get_websocket_manager()
         self.agent_manager = get_agent_manager()
@@ -86,18 +88,18 @@ class MainAgent(BaseAgent):
         registry.register(MemoryRetrievalTool())
 
 
-        discovery = ToolDiscovery()
-        tools = discovery.discover_tools(["tools"])
+        # discovery = ToolDiscovery()
+        # tools = discovery.discover_tools(["tools"])
         
-        registered_count = 0
-        for tool in tools:
-            try:
-                registry.register(tool)
-                registered_count += 1
-            except Exception as e:
-                logger.debug(f"Tool {tool.name} registration failed: {e}")
+        # registered_count = 0
+        # for tool in tools:
+        #     try:
+        #         registry.register(tool)
+        #         registered_count += 1
+        #     except Exception as e:
+        #         logger.debug(f"Tool {tool.name} registration failed: {e}")
         
-        logger.info(f"✅ Auto-discovered {registered_count} tools")
+        # logger.info(f"✅ Auto-discovered {registered_count} tools")
 
         return registry
 
@@ -113,11 +115,7 @@ class MainAgent(BaseAgent):
             agent = self.create(
                 system_prompt_file=[
                     "identity.md",
-                    "system.md",
-                    "user.md",
-                    "memory.md",
-                    "tools_call.md",
-                    "lessons.md"
+                    "soul.md",
                 ],
                 agent_id=session_agent_id,
                 set_as_current=False  # Don't set as current, we manage multiple
@@ -172,80 +170,23 @@ class MainAgent(BaseAgent):
         text = event.payload["text"]
         source = getattr(event, "source", "telegram")
         
-        await self.ws_manager.broadcast_status("thinking", details="Processing User Message")
+        await self.response_manager.update_status(chat_id, "Thinking...", source)
 
         try:
             # Ensure agent is ready
             await self._ensure_agent_ready(chat_id)
             agent = self._agents[chat_id]
             
-            full_response_text = ""
-            current_status = "🤔 Thinking..."
-            last_message = ""
             # Stream response
             async for chunk in agent.stream(text):
-                if chunk.content:
-                    full_response_text += chunk.content
-                    last_message = chunk.content
-                    if source == "web_ui":
-                        # Push to UI via WebSocket
-                        await self.ws_manager.broadcast({
-                            "type": "chat_message",
-                            "payload": {
-                                "role": "assistant",
-                                "content": full_response_text
-                            }
-                        })
-                    else:
-                        await self.bot.send_or_edit(
-                            chat_id=chat_id, 
-                            text=chunk.content
-                        )
-                
-                if chunk.tool_call:
-                    tool_name = chunk.tool_call.name
-                    current_status = f"🔧 Using {tool_name}..."
-                    if source != "web_ui":
-                        await self.bot.send_or_edit(
-                            chat_id=chat_id, 
-                            text=f"{full_response_text}\n\n{current_status}"
-                        )
-                    await self.ws_manager.broadcast_status("tool_use", details=tool_name)
+                await self.response_manager.handle_chunk(chat_id, chunk, source)
 
-                if chunk.tool_result:
-                    current_status = "🤔 Thinking..."
-
-            # Send final message
-            if source == "telegram":
-                await self.bot.send_or_edit(
-                    chat_id=chat_id, 
-                    text=last_message + "\n ✔️", 
-                    is_final=True
-                )
-            elif source == "web_ui":
-                await self.ws_manager.broadcast({
-                    "type": "chat_message",
-                    "payload": {
-                        "role": "assistant",
-                        "content": full_response_text,
-                        "final": True
-                    }
-                })
-            else:
-                await self.notification_service.send_custom_notification(full_response_text)
+            # Finalize
+            await self.response_manager.finalize_response(chat_id, source)
 
         except Exception as e:
             logger.error(f"Error handling message for chat {chat_id}: {e}", exc_info=True)
-            error_msg = f"⚠️ Error: {str(e)}"
-            
-            if source == "web_ui":
-                await self.ws_manager.broadcast({"type": "error", "message": str(e)})
-            else:
-                await self.bot.send_or_edit(
-                    chat_id=chat_id, 
-                    text=error_msg, 
-                    is_final=True
-                )
+            await self.response_manager.send_error(chat_id, str(e), source)
         finally:
             await self.ws_manager.broadcast_status("idle")
 
@@ -253,8 +194,9 @@ class MainAgent(BaseAgent):
         """Handle user approval/denial of sensitive tool."""
         chat_id = event.payload["chat_id"]
         approved = event.payload["approved"]
+        source = "telegram" # Approvals currently only from telegram
         
-        await self.ws_manager.broadcast_status("thinking", details="Processing Approval")
+        await self.response_manager.update_status(chat_id, "Processing Approval...", source)
 
         try:
             # Ensure agent exists
@@ -262,21 +204,15 @@ class MainAgent(BaseAgent):
             agent = self._agents[chat_id]
             
             reply = "User approved the action." if approved else "User denied the action."
-            full_response_text = ""
 
             async for chunk in agent.stream(reply):
-                if chunk.content:
-                    full_response_text += chunk.content
-                    await self.bot.send_or_edit(chat_id=chat_id, text=full_response_text)
+                await self.response_manager.handle_chunk(chat_id, chunk, source)
 
-            await self.bot.send_or_edit(
-                chat_id=chat_id, 
-                text=full_response_text, 
-                is_final=True
-            )
+            await self.response_manager.finalize_response(chat_id, source)
             
         except Exception as e:
             logger.error(f"Error handling approval for chat {chat_id}: {e}", exc_info=True)
+            await self.response_manager.send_error(chat_id, str(e), source)
         finally:
             await self.ws_manager.broadcast_status("idle")
     

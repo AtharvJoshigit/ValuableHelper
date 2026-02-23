@@ -171,7 +171,7 @@ class ApplicationManager:
                 'top_p': 0.5,
                 'max_tokens': 3000,
                 'temperature': 1.0,
-                "model_id": "gemini-3-flash-preview",
+                "model_id": "gemini-3-pro-preview",
                 "provider": "google",
                 "max_steps": 15,
                 "additional_params": {

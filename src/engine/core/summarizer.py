@@ -112,7 +112,7 @@ Respond with ONLY valid JSON — no markdown fences, no extra keys:
     def __init__(
         self,
         agent_id: str,
-        model: str = "gemini-2.0-flash",
+        model: str = "gemini-2.5-pro",
     ):
         self.agent_id = agent_id
         self.provider = get_provider(

@@ -1,4 +1,4 @@
-# src/rag/stores/memory_store.py (Updated)
+# src/rag/stores/memory.py (Updated)
 from typing import List, Dict, Any, Optional
 from rag.stores.base import BaseVectorStore
 from rag.schema import MemorySchema, VectorDocument, SearchResult
@@ -49,22 +49,16 @@ class MemoryVectorStore(BaseVectorStore):
     ) -> List[Dict[str, Any]]:
         """
         Retrieve memories for an agent with semantic search and filtering.
-        
-        Args:
-            agent_id: Agent identifier
-            query: Semantic search query
-            limit: Max results
-            min_importance: Minimum importance score (1-10)
-            summary_only: Only return summary entries (not individual messages)
-        
-        Returns:
-            List of memory dictionaries with content and metadata
         """
-        # Build filter for ChromaDB
-        where_clause = {"agent_id": agent_id}
+        # Build filter for ChromaDB - Fixed for multiple operators
+        where_clause = {
+            "$and": [
+                {"agent_id": {"$eq": agent_id}}
+            ]
+        }
         
         if summary_only:
-            where_clause["role"] = "summary"
+            where_clause["$and"].append({"role": {"$eq": "summary"}})
         
         try:
             # Semantic search with filters
@@ -108,8 +102,6 @@ class MemoryVectorStore(BaseVectorStore):
         limit: int = 5
     ) -> List[Dict[str, Any]]:
         """Retrieve memories by specific tags."""
-        # This requires custom filtering - implementation depends on your vector DB
-        # For ChromaDB, you might need to do post-filtering
         try:
             results: List[SearchResult] = self.search(
                 query=" ".join(tags),  # Use tags as query
