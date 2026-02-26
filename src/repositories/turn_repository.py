@@ -192,3 +192,30 @@ class TurnRepository:
         )
         logger.info(row)
         return row["cnt"] if row else 0
+    
+    # repositories/turn_repository.py
+
+    async def get_recent_turns_output_tokens(
+    self,
+    conversation_id: str,
+    limit: int,
+) -> List[int]:
+        """
+        Return output_tokens for the last `limit` COMPLETED turns,
+        ordered newest → oldest.
+
+        We return a list so the caller can do a backward walk to
+        dynamically shrink the protected window without extra DB calls.
+        NULLs are coerced to 0 to keep arithmetic safe.
+        """
+        rows = await self.db.fetch_all(
+            """
+            SELECT COALESCE(output_tokens, 0) AS output_tokens
+            FROM   turns
+            WHERE  conversation_id = ? AND state = 'COMPLETED'
+            ORDER  BY completed_at DESC
+            LIMIT  ?
+            """,
+            (conversation_id, limit),
+        )
+        return [int(r["output_tokens"]) for r in rows]

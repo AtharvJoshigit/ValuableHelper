@@ -83,6 +83,8 @@ class MemoryManager:
         if enable_summarization:
             self._summarizer = MemorySummarizer(agent_id=agent_id)
 
+        self.min_recent_turns = 2 # move to app config
+        self.context_floor_pct = 0.35 # move to app config
     # ------------------------------------------------------------------ #
     # Initialization                                                       #
     # ------------------------------------------------------------------ #
@@ -348,23 +350,76 @@ class MemoryManager:
     # ------------------------------------------------------------------ #
 
     async def _maybe_summarize(self, total_tokens: int = 0) -> None:
-        count= await self.turn_repo.get_completed_turn_count(self.conversation_id)
+        count = await self.turn_repo.get_completed_turn_count(self.conversation_id)
         logger.info("count: %s", count)
-        archivable = max(0, count - self.recent_k_turns)
-        logger.info("Archivable: %s \n Summarization Threshold: %s \n Total Token : %s \n Token Threshold : %s", archivable, self.summarization_threshold, total_tokens, self.token_threshold)
+
+        archivable  = max(0, count - self.recent_k_turns)
         token_pressure = total_tokens > 0 and total_tokens >= self.token_threshold
         turn_pressure  = archivable >= self.summarization_threshold
-        
-        logger.info("Token Pressure: %s, Turn Pressure: %s", token_pressure, turn_pressure)
-        if token_pressure or turn_pressure:
-            task = asyncio.create_task(self._perform_summarization())
-            task.add_done_callback(_log_task_exception)
 
-    async def _perform_summarization(self) -> None:
+        logger.info(
+            "Archivable: %s | Summarization Threshold: %s | "
+            "Total Tokens: %s | Token Threshold: %s",
+            archivable, self.summarization_threshold,
+            total_tokens, self.token_threshold,
+        )
+        logger.info("Token Pressure: %s, Turn Pressure: %s", token_pressure, turn_pressure)
+
+        if not (token_pressure or turn_pressure):
+            return
+
+        # ------------------------------------------------------------------ #
+        # Dynamic effective_k                                                  #
+        #                                                                      #
+        # Goal: the protected recent window should hold at most               #
+        # `context_floor_pct` (e.g. 0.35) of token_threshold in output        #
+        # tokens.  If it exceeds that, we shrink the window by peeling        #
+        # the oldest turn off the protected set (moving it into the           #
+        # archivable set) until the floor is satisfied or we hit              #
+        # min_recent_turns.                                                   #
+        #                                                                      #
+        # We use only output_tokens because input_tokens on every turn        #
+        # includes the full accumulated context of prior messages —           #
+        # summing them would massively double-count.                          #
+        # ------------------------------------------------------------------ #
+        floor_tokens   = self.token_threshold * self.context_floor_pct   # e.g. 0.35
+        effective_k    = self.recent_k_turns
+
+        # newest → oldest, so index 0 = newest, index -1 = oldest in window
+        recent_output_tokens = await self.turn_repo.get_recent_turns_output_tokens(
+            self.conversation_id, self.recent_k_turns
+        )
+        recent_output_sum = sum(recent_output_tokens)
+
+        logger.info(
+            "Initial recent-%d output token sum: %d (floor=%.0f)",
+            effective_k, recent_output_sum, floor_tokens,
+        )
+
+        while recent_output_sum > floor_tokens and effective_k > self.min_recent_turns:
+            # Drop the oldest turn from the protected window
+            # (last element in newest→oldest list)
+            dropped = recent_output_tokens[effective_k - 1]
+            recent_output_sum -= dropped
+            effective_k -= 1
+            logger.debug(
+                "Dropped oldest protected turn (output_tokens=%d) → effective_k=%d, sum=%d",
+                dropped, effective_k, recent_output_sum,
+            )
+
+        logger.info(
+            "effective_k=%d (started at %d), recent output sum=%d, floor=%.0f",
+            effective_k, self.recent_k_turns, recent_output_sum, floor_tokens,
+        )
+
+        task = asyncio.create_task(self._perform_summarization(effective_k=effective_k))
+        task.add_done_callback(_log_task_exception)
+
+    async def _perform_summarization(self, effective_k: int) -> None:
         async with self._summarization_lock:
             candidate_turns = await self.turn_repo.get_unsummarized_completed_turns(
                 conversation_id=self.conversation_id,
-                exclude_recent=self.recent_k_turns,
+                exclude_recent=effective_k,
             )
             if not candidate_turns:
                 return

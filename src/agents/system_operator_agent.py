@@ -2,7 +2,6 @@ from agents.agent_id import AGENT_ID
 from pydantic import config
 from engine.providers.base_provider import BaseProvider
 from engine.providers.google.provider import GoogleProvider
-from engine.registry.library.request_tools import RequestApprovalTool
 from engine.registry.tool_registry import ToolRegistry
 from engine.registry.library.filesystem_tools import ListDirectoryTool, ReadFileTool, CreateFileTool
 from engine.registry.library.system_tools import RunCommandTool

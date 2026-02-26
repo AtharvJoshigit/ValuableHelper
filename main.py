@@ -36,6 +36,7 @@ print("AFTER IMPORT 6")
 from services.telegram_bot.bot import TelegramBotService
 print("AFTER IMPORT 7")
 from services.plan_director import PlanDirector
+from services.heartbeat_service import HeartbeatService
 from agents.main_agent import MainAgent
 from engine.core.provide import auto_register_providers
 # from engine.registry.tool_manager import ToolManager
@@ -114,6 +115,7 @@ class ApplicationManager:
         self.app_context: Optional[AppContext] = None
         self.plan_director: Optional[PlanDirector] = None
         self.obs_service: Optional[ObservabilityService] = None
+        self.heartbeat_service: Optional[HeartbeatService] = None
         self.bot_service: Optional[TelegramBotService] = None
         self.main_agent: Optional[MainAgent] = None
         self.shutdown_event = asyncio.Event()
@@ -156,6 +158,9 @@ class ApplicationManager:
             if not self.bot_only:
                 self.obs_service = ObservabilityService()
                 self.obs_service.start()
+            
+            # Initialize Heartbeat Service
+            self.heartbeat_service = HeartbeatService(interval_minutes=1800) # 30 mins
             self.logger.info("✅ Plan Director & Observability initialized")
             
             # 5. Configuration
@@ -171,16 +176,16 @@ class ApplicationManager:
                 'top_p': 0.5,
                 'max_tokens': 3000,
                 'temperature': 1.0,
-                "model_id": "gemini-3-pro-preview",
+                "model_id": "gemini-3-flash-preview",
                 "provider": "google",
-                "max_steps": 15,
+                "max_steps": 40,
                 "additional_params": {
                     "include_thoughts": False,
                 },
                 # Memory settings (NEW)
                 "enable_memory_summarization": self.enable_memory,
                 "agent_name": "ValH Main Agent",
-                "memory_recent_k": 10,  # More context for main agent
+                "memory_recent_k": 5,  # More context for main agent
                 "memory_summarization_threshold": 10,
                 "session_timeout_hours": 48,  # 2 days for main conversations
             }
@@ -250,6 +255,11 @@ class ApplicationManager:
                 name="main_agent"
             )
             self.logger.info("✅ Main Agent started")
+
+            # Start Heartbeat
+            if self.heartbeat_service:
+                self.heartbeat_service.start()
+                self.logger.info("✅ Heartbeat Service started")
             
             # 2. Start FastAPI Server (Optional)
             if self.server and not self.bot_only:
@@ -319,6 +329,10 @@ class ApplicationManager:
             #     shutdown_tasks.append(self._cancel_task(self.bot_task, "Telegram bot task"))
         
         # 4. Stop Main Agent
+        if self.heartbeat_service:
+             self.logger.info("Stopping Heartbeat Service...")
+             self.heartbeat_service.stop()
+
         if self.main_agent:
             self.logger.info("Stopping Main Agent...")
             shutdown_tasks.append(self._safe_shutdown(self.main_agent.stop(), "Main Agent"))

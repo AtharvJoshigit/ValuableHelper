@@ -229,7 +229,13 @@ class TelegramBotService:
 
     @authorized_only
     async def reset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await self.bus.send(Event(EventType.USER_MESSAGE, {"chat_id": update.effective_chat.id, "text": "System: Reset session."}, "telegram"))
+        await self.bus.send(
+            Event(
+                type=EventType.USER_MESSAGE, 
+                payload={"chat_id": update.effective_chat.id, "text": "System: Reset session."}, 
+                source="telegram",
+                )
+            )
         await update.message.reply_text("🔄 Resetting...")
 
     @authorized_only

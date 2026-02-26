@@ -40,6 +40,7 @@ import os
 from typing import Callable, List, Optional, Tuple
 
 from engine.core.turn_manager import validate_message_ordering
+from engine.providers.google.google_exception_mapper import map_google_exception
 from google import genai
 from google.genai import types
 
@@ -181,7 +182,7 @@ class GoogleProvider:
             )
         except Exception as exc:
             logger.error("Google API error: %s", exc, exc_info=True)
-            raise exc
+            raise map_google_exception(exc, model=self.model_id, phase="generation") from exc
 
         # ------------------------------------------------------------------
         # Parse response parts
@@ -198,8 +199,7 @@ class GoogleProvider:
                 # ── Thinking / reasoning part ───────────────────────────
                 if getattr(part, "thought", False) and part.text:
                     reasoning_text = part.text
-                    if self.on_text_chunk:
-                        self.on_text_chunk(part.text)
+                    # Do not stream thoughts to the user
                     continue
 
                 # ── Regular text part ───────────────────────────────────
@@ -261,7 +261,35 @@ class GoogleProvider:
 
         if not tool_calls and text_parts:
             raw_text = "".join(text_parts)
-            agent_response = parse_agent_response(raw_text)
+            
+            # --- HEURISTIC: Strip Leaked Thoughts ---
+            # Some models output "Thinking Process:" or similar as text in tool_mode.
+            cleaned_text = raw_text
+            
+            # 1. Remove <thought> tags
+            if "<thought>" in cleaned_text:
+                import re
+                cleaned_text = re.sub(r'<thought>.*?</thought>', '', cleaned_text, flags=re.DOTALL)
+            
+            # 2. Remove "Thinking Process:" block
+            if "Thinking Process:" in cleaned_text:
+                import re
+                # Matches "Thinking Process:" followed by content, ending with double newline
+                cleaned_text = re.sub(r'Thinking Process:.*?\n\n', '', cleaned_text, flags=re.DOTALL | re.IGNORECASE)
+                
+            # 3. Remove "Analysis:" block if it appears at the start
+            if cleaned_text.strip().startswith("Analysis:"):
+                 import re
+                 cleaned_text = re.sub(r'^Analysis:.*?\n\n', '', cleaned_text, flags=re.DOTALL | re.IGNORECASE)
+
+            cleaned_text = cleaned_text.strip()
+            
+            # Try parsing JSON from the CLEANED text first
+            agent_response = parse_agent_response(cleaned_text)
+            
+            # If that fails, try parsing from the RAW text (in case we stripped valid JSON parts by accident)
+            if agent_response is None and cleaned_text != raw_text:
+                agent_response = parse_agent_response(raw_text)
 
             if agent_response is None:
                 logger.warning(
@@ -273,7 +301,7 @@ class GoogleProvider:
                 # JSON. Wrap it so the orchestrator has something to yield.
                 if tool_mode:
                     agent_response = AgentResponse(
-                        response_text=raw_text,
+                        response_text=cleaned_text if cleaned_text else raw_text, # Use cleaned text if not empty
                         is_final=True,
                     )
 

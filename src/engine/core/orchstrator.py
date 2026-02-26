@@ -162,6 +162,7 @@ class AgentOrchestrator:
             except Exception as exc:
                 logger.error("Unexpected provider error: %s", exc, exc_info=True)
                 self.last_exit_reason = LoopExitReason.ERROR
+                yield StreamChunk(content=f"I encountered an unexpected error. Error: {str(exc)[:50]}")
                 yield TurnResultChunk(
                     turn_result=self._build_turn_result(
                         AgentResponse(

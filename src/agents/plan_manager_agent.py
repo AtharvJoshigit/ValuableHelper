@@ -1,7 +1,7 @@
 from agents.agent_id import AGENT_ID
 from engine.providers.base_provider import BaseProvider
 from engine.providers.google.provider import GoogleProvider
-from engine.registry.library.filesystem_tools import ListDirectoryTool, ReadFileTool
+from engine.registry.library.filesystem_tools import ListDirectoryTool, ReadFileTool, CreateFileTool, SearchAndReplaceTool
 from infrastructure.singleton import Singleton
 from .base_agent import BaseAgent
 from .coder_agent import CoderAgent
@@ -34,6 +34,8 @@ class PlanManagerAgent(BaseAgent):
         
         registry.register(ListDirectoryTool())
         registry.register(ReadFileTool())
+        registry.register(CreateFileTool())
+        registry.register(SearchAndReplaceTool())
         # 1. The Core Memory: Task Store
         # We pass the shared store instance so everyone sees the same tasks
         registry.register(AddTaskTool())

@@ -12,7 +12,7 @@ from engine.registry.library.agent_management_tool import CreateAgentTool, Switc
 from engine.registry.library.dynamic_tool_creator import DynamicToolCreatorTool
 from engine.registry.library.filesystem_tools import CreateFileTool, ListDirectoryTool, ReadFileTool, SearchAndReplaceTool
 from engine.registry.library.memory_retrieval_tool import MemoryRetrievalTool
-from engine.registry.library.switch_model_tool import SwitchModelTool
+from engine.registry.library.switch_model_tool import GetCurrentModelTool, SwitchModelTool
 from engine.registry.library.system_tools import RunCommandTool
 from engine.registry.library.telegram_tools import SendTelegramMessageTool
 from engine.registry.tool_registry import ToolRegistry
@@ -63,6 +63,8 @@ class MainAgent(BaseAgent):
         self._agents: Dict[int, Agent] = {}
         self._agent_ids: Dict[int, str] = {}  # Track agent IDs
         # Check database availability
+        self.main_agent = "ValH"
+        self.main_agent_active = False
         self.has_database = get_global_database() is not None
         if self.has_database:
             logger.info("✅ MainAgent initialized with database-backed memory")
@@ -86,6 +88,8 @@ class MainAgent(BaseAgent):
         registry.register(SendTelegramMessageTool())
         registry.register(DynamicToolCreatorTool())
         registry.register(MemoryRetrievalTool())
+        registry.register(GetCurrentModelTool())
+        
 
 
         # discovery = ToolDiscovery()
@@ -116,6 +120,7 @@ class MainAgent(BaseAgent):
                 system_prompt_file=[
                     "identity.md",
                     "soul.md",
+                    "lessons.md",
                 ],
                 agent_id=session_agent_id,
                 set_as_current=False  # Don't set as current, we manage multiple
@@ -159,6 +164,8 @@ class MainAgent(BaseAgent):
                     asyncio.create_task(self._handle_user_message(event))
                 elif event.type == EventType.USER_APPROVAL:
                     asyncio.create_task(self._handle_user_approval(event))
+                elif event.type == EventType.HEARTBEAT:
+                    asyncio.create_task(self._handle_heartbeat(event))
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -174,7 +181,7 @@ class MainAgent(BaseAgent):
 
         try:
             # Ensure agent is ready
-            await self._ensure_agent_ready(chat_id)
+            await self._ensure_agent_ready(chat_id=chat_id)
             agent = self._agents[chat_id]
             
             # Stream response
@@ -189,6 +196,31 @@ class MainAgent(BaseAgent):
             await self.response_manager.send_error(chat_id, str(e), source)
         finally:
             await self.ws_manager.broadcast_status("idle")
+
+    async def _handle_heartbeat(self, event: Event):
+        """Handle system heartbeat events."""
+        # Use a dedicated system chat ID (e.g., 0)
+        chat_id = 0
+        instruction = event.payload.get("instruction", "Perform system health check")
+        source = "system"
+        
+        logger.info(f"💓 Processing Heartbeat: {instruction}")
+
+        try:
+            # Ensure agent is ready
+            await self._ensure_agent_ready(chat_id)
+            agent = self._agents[chat_id]
+            
+            # For heartbeat, we don't stream to UI, but we log the output
+            # We can use a special method or just stream and ignore chunks
+            full_response = ""
+            async for chunk in agent.stream(f"SYSTEM INSTRUCTION: {instruction}"):
+                full_response += chunk
+            
+            logger.info(f"💓 Heartbeat Result: {full_response[:200]}...") # Log first 200 chars
+
+        except Exception as e:
+            logger.error(f"Error handling heartbeat: {e}", exc_info=True)
 
     async def _handle_user_approval(self, event: Event):
         """Handle user approval/denial of sensitive tool."""

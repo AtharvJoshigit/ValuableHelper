@@ -121,48 +121,59 @@ class HybridSummaryRepository:
         summary_id = str(uuid.uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
 
-        await self.db.execute(
-            """
-            INSERT INTO summaries (
-                id, conversation_id, agent_id, summary_type, content,
-                importance, message_start_seq, message_end_seq, message_count,
-                turn_start_id, turn_end_id, tags, metadata, created_at
-            ) VALUES (?, ?, ?, 'long', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                summary_id, conversation_id, agent_id, content,
-                importance, message_start_seq, message_end_seq, message_count,
-                turn_start_id, turn_end_id,
-                json.dumps(tags), json.dumps(metadata), created_at,
-            ),
-        )
+        # Ensure tags and metadata are valid JSON strings
+        tags_json = json.dumps(tags) if tags else '[]'
+        metadata_json = json.dumps(metadata) if metadata else '{}'
+        try : 
+            await self.db.execute(
+                """
+                INSERT INTO summaries (
+                    id, conversation_id, agent_id, summary_type, content,
+                    importance, message_start_seq, message_end_seq, message_count,
+                    turn_start_id, turn_end_id, tags, metadata, created_at
+                ) VALUES (?, ?, ?, 'long', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    summary_id, conversation_id, agent_id, content,
+                    importance, message_start_seq, message_end_seq, message_count,
+                    turn_start_id, turn_end_id,
+                    tags_json, metadata_json, created_at,
+                ),
+            )
+        except Exception as e : 
+            logger.error("Exception while sotring Long summery to DB, Excepiotn : %s", e)
 
         # Vector index for semantic recall
-        if self.vector_store:
-            safe_meta = {
-                k: json.dumps(v) if isinstance(v, (list, dict)) else v
-                for k, v in {
-                    "summary_id": summary_id,
-                    "conversation_id": conversation_id,
-                    "turn_start_id": turn_start_id,
-                    "turn_end_id": turn_end_id,
-                    **metadata,
-                }.items()
-            }
-            self.vector_store.add_memory(MemorySchema(
-                agent_id=agent_id,
-                agent_name=agent_name,
-                content=content,
-                role="summary",
-                summary_type="long",
-                importance=importance,
-                message_count=message_count,
-                tags=tags,
-                metadata=safe_meta,
-                timestamp=created_at,
-            ))
+        
+        try: 
+            if self.vector_store:
+                safe_meta = {
+                    k: json.dumps(v) if isinstance(v, (list, dict)) else v
+                    for k, v in {
+                        "summary_id": summary_id,
+                        "conversation_id": conversation_id,
+                        "turn_start_id": turn_start_id,
+                        "turn_end_id": turn_end_id,
+                        **metadata,
+                    }.items()
+                }
+                self.vector_store.add_memory(MemorySchema(
+                    agent_id=agent_id,
+                    agent_name=agent_name,
+                    content=content,
+                    role="summary",
+                    summary_type="long",
+                    importance=importance,
+                    message_count=message_count,
+                    tags=tags,
+                    metadata=safe_meta,
+                    timestamp=created_at,
+                ))
 
-        logger.info("Long summary stored: %s", summary_id[:8])
+            logger.info("Long summary stored: %s", summary_id[:8])
+        except Exception as e: 
+            logger.error("Exception while sotring Long summery to VectorDB, Excepiotn : %s", e)
+        
         return summary_id
 
     async def search_semantic(

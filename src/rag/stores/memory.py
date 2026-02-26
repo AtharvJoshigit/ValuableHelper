@@ -1,5 +1,6 @@
 # src/rag/stores/memory.py (Updated)
 from typing import List, Dict, Any, Optional
+import json
 from rag.stores.base import BaseVectorStore
 from rag.schema import MemorySchema, VectorDocument, SearchResult
 from rag.config import settings
@@ -18,17 +19,27 @@ class MemoryVectorStore(BaseVectorStore):
         Add an episodic memory or summary to the vector store.
         Typically used for long summaries that benefit from semantic search.
         """
-        # Enrich metadata
+        # Flatten metadata for ChromaDB (no nested dicts/lists allowed)
+        safe_tags = ",".join(memory.tags) if memory.tags else ""
+        
+        # Serialize any complex types in metadata
+        safe_extra_metadata = {}
+        for k, v in memory.metadata.items():
+            if isinstance(v, (dict, list)):
+                safe_extra_metadata[k] = json.dumps(v)
+            else:
+                safe_extra_metadata[k] = v
+
         enriched_metadata = {
             "agent_id": memory.agent_id,
             "agent_name": memory.agent_name or "unknown",
             "role": memory.role,
-            "summary_type": memory.summary_type,
+            "summary_type": memory.summary_type or "unknown",
             "importance": memory.importance,
             "timestamp": memory.timestamp.isoformat(),
-            "message_count": memory.message_count,
-            "tags": memory.tags,
-            **memory.metadata  # Include any additional metadata
+            "message_count": memory.message_count or 0,
+            "tags": safe_tags, # Stored as comma-separated string
+            **safe_extra_metadata
         }
         
         doc = VectorDocument(
@@ -50,7 +61,7 @@ class MemoryVectorStore(BaseVectorStore):
         """
         Retrieve memories for an agent with semantic search and filtering.
         """
-        # Build filter for ChromaDB - Fixed for multiple operators
+        # Build filter for ChromaDB
         where_clause = {
             "$and": [
                 {"agent_id": {"$eq": agent_id}}
@@ -73,11 +84,15 @@ class MemoryVectorStore(BaseVectorStore):
             for r in results:
                 importance = r.metadata.get("importance", 5)
                 if importance >= min_importance:
+                    # Reconstruct tags from string
+                    tags_str = r.metadata.get("tags", "")
+                    tags_list = tags_str.split(",") if tags_str else []
+                    
                     filtered.append({
                         "content": r.content,
                         "importance": importance,
                         "timestamp": r.metadata.get("timestamp"),
-                        "tags": r.metadata.get("tags", []),
+                        "tags": tags_list,
                         "score": r.score,
                         "message_count": r.metadata.get("message_count"),
                         "metadata": r.metadata
@@ -103,15 +118,22 @@ class MemoryVectorStore(BaseVectorStore):
     ) -> List[Dict[str, Any]]:
         """Retrieve memories by specific tags."""
         try:
+            # Chroma doesn't support "contains" for strings easily, so we rely on semantic search + post-filtering
+            # Or exact match if we stored tags individually, but we stored as CSV string.
+            # Semantic search is better here.
+            
             results: List[SearchResult] = self.search(
-                query=" ".join(tags),  # Use tags as query
-                n_results=limit * 2,
+                query=" ".join(tags),  # Use tags as query context
+                n_results=limit * 3,
                 where={"agent_id": agent_id}
             )
             
             filtered = []
             for r in results:
-                mem_tags = r.metadata.get("tags", [])
+                tags_str = r.metadata.get("tags", "")
+                mem_tags = tags_str.split(",") if tags_str else []
+                
+                # Check if ANY requested tag is in the memory's tags
                 if any(tag in mem_tags for tag in tags):
                     filtered.append({
                         "content": r.content,

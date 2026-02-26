@@ -42,7 +42,7 @@ class ResponseManager:
         if source == "web_ui":
             await self.ws_manager.broadcast({
                 "type": "chat_message",
-                "payload": {"role": "assistant", "content": text, "final": is_final}
+                "payload": {"role": "assistant", "content": text}
             })
         elif source == "telegram":
             if is_final:

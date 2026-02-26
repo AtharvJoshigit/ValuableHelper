@@ -1,8 +1,7 @@
-# HEURISTICS & LESSONS LEARNED
+# Lessons Learned
 
-**RULE CREATION PROTOCOL:** When a bug is fixed or a user corrects a behavior, synthesize the lesson and append it here.
-
-**GLOBAL HEURISTICS**
-- **Lesson 001:** [Example: "Windows pathing requires double backslashes in JSON configs. Failed to do this on Date X. Do not repeat."]
-- **Lesson 002:** [Example: "When parsing React state, do not mutate directly. Broke the app on Date Y. Always use setters."]
-- **Lesson 003:** [Empty - awaiting new learning]
+## 2026-02-26: The "Optimization Loop" Trap
+- **Incident:** I wrote `me/identity.md` and `me/soul.md` multiple times in a single turn to "polish" the phrasing.
+- **Root Cause:** I was using the file system as a scratchpad instead of finalizing the text internally.
+- **Correction:** Treat file writes as **Commits**, not **Drafts**.
+- **Rule:** **Write-Once Rule:** Do not rewrite the same file multiple times in a single turn. Finalize text internally, then write once. Only rewrite on error.

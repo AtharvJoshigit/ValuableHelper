@@ -81,22 +81,28 @@ class SearchAndReplaceTool(BaseTool):
     new_str: Optional[str] = Field(default=None, description="The replacement string.")
 
     def execute(self, **kwargs) -> Any:
-        path = kwargs.get("path")
-        old_str = kwargs.get("old_str")
-        new_str = kwargs.get("new_str")
-        
+        path = kwargs.get("path") or self.path
+        old_str = kwargs.get("old_str") if kwargs.get("old_str") is not None else self.old_str
+        new_str = kwargs.get("new_str") if kwargs.get("new_str") is not None else self.new_str
+
+        if not path or old_str is None or new_str is None:
+            return {"status": "error", "error": "path, old_str, and new_str are all required."}
+
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            
-            if old_str not in content:
-                return {"status": "error", "error": f"String '{old_str}' not found in file."}
-                
-            new_content = content.replace(old_str, new_str)
-            
+
+            count = content.count(old_str)
+            if count == 0:
+                return {"status": "error", "error": "String not found in file."}
+            if count > 1:
+                return {"status": "error", "error": f"String found {count} times — must be unique."}
+
+            new_content = content.replace(old_str, new_str, 1)
+
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(new_content)
-                
-            return {"status": "success", "message": "String replaced successfully."}
+
+            return {"status": "success", "replaced": old_str, "with": new_str}
         except Exception as e:
             return {"status": "error", "error": str(e)}

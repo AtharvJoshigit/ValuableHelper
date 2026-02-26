@@ -216,22 +216,25 @@ Respond with ONLY valid JSON — no markdown fences, no extra keys:
                 conversation=conversation_text,
             )
 
-        response = await self.provider.call_model(
+        # Unpack the 5-tuple from GoogleProvider.call_model
+        # (agent_response, reasoning, tool_calls, raw_response, metadata)
+        agent_response, _, _, _, _ = await self.provider.call_model(
             history=[Message(role=Role.USER, text=prompt)],
             tools=[],
         )
-        logger.info("short summery Response : %s", response)
-        return self._extract_text(response).strip()
+        logger.info("short summary Response : %s", agent_response)
+        return self._extract_text(agent_response).strip()
 
     async def _generate_long(self, conversation_text: str) -> Dict[str, Any]:
         prompt = self._LONG_PROMPT.format(conversation=conversation_text)
 
-        response = await self.provider.call_model(
+        # Unpack the 5-tuple
+        agent_response, _, _, _, _ = await self.provider.call_model(
             history=[Message(role=Role.USER, text=prompt)],
             tools=[],
         )
-        logger.info("long summery Response : %s", response)
-        raw = self._extract_text(response).strip()
+        logger.info("long summary Response : %s", agent_response)
+        raw = self._extract_text(agent_response).strip()
         return self._parse_json(raw)
 
     # ------------------------------------------------------------------ #

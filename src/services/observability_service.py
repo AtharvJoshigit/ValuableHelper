@@ -80,7 +80,7 @@ class ObservabilityService:
         })
 
         # 2. Telegram Dashboard Update
-        if self._response_manager and agent_id and "chat_" in str(agent_id):
+        if self._response_manager :
             try:
                 chat_id = int(str(agent_id).split("_")[-1])
                 await self._response_manager.update_status(chat_id, f"🔧 Using {tool_name}...", "telegram")

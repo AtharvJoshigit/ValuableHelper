@@ -263,7 +263,7 @@ def validate_and_fix_history(messages: List[Message]) -> List[types.Content]:
             if msg._raw_provider_content:
                 contents.append(msg._raw_provider_content)
                 continue
-            if hasattr(msg, ' thought_text') and msg.thought_text:
+            if hasattr(msg, 'thought_text') and msg.thought_text:
                 parts.append(types.Part(thought=True, text=msg.thought_text))
 
             for tc in (msg.tool_calls or []):

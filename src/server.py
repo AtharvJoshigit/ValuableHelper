@@ -16,6 +16,8 @@ from domain.event import Event, EventType
 # Setup Logging
 logger = logging.getLogger("ValH_Server")
 
+START_TIME = time.time()
+
 app = FastAPI(title="ValH Interface")
 
 # --- WEBSOCKET ENDPOINT ---
@@ -34,6 +36,16 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 # --- ROUTES ---
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for the watchdog."""
+    uptime = time.time() - START_TIME
+    return JSONResponse({
+        "status": "alive",
+        "uptime_seconds": round(uptime, 2),
+        "timestamp": time.time()
+    })
 
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
